@@ -1,0 +1,298 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="robots" content="noindex,nofollow,noarchive" />
+  <title>Tima Ops</title>
+  <script>
+    try {
+      var t = localStorage.getItem('ops.theme.v1');
+      if (t === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+    } catch (e) {}
+  </script>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+
+<!-- GLOBAL LOADER -->
+<div id="globalLoader" class="global-loader">
+  <div class="loader-spinner"></div>
+  <p id="globalLoaderText">Загрузка данных…</p>
+</div>
+
+<div id="app" class="app hidden">
+
+  <!-- TOPBAR -->
+  <header class="topbar">
+    <div class="brand">
+      <div class="brand-icon">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="7" height="7" rx="2" fill="#6366f1"/><rect x="14" y="3" width="7" height="7" rx="2" fill="#22c55e"/><rect x="3" y="14" width="7" height="7" rx="2" fill="#f59e0b"/><rect x="14" y="14" width="7" height="7" rx="2" fill="#3b82f6"/></svg>
+      </div>
+      <div>
+        <div class="brand-title">Tima Ops</div>
+        <div class="brand-sub" id="lastUpdated">обновление…</div>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <div id="userBadge" class="user-badge">…</div>
+      <div id="topbarStatus" class="status-dot dot-loading" title="Статус системы"></div>
+      <button id="langBtn" class="icon-btn" title="Switch language">RU</button>
+      <button id="themeBtn" class="icon-btn" title="Переключить тему">🌙</button>
+      <button id="updateBtn" class="btn btn-sm btn-amber hidden" title="Обновить OpenClaw">Обновить OpenClaw</button>
+      <button id="refreshBtn" class="icon-btn" title="Обновить">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2"><path d="M23 4v6h-6"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- NAV TABS -->
+  <nav class="tabs" id="tabs">
+    <button class="tab active" data-tab="overview">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="7" height="7" rx="1.5" fill="#6366f1"/><rect x="14" y="3" width="7" height="7" rx="1.5" fill="#6366f1"/><rect x="3" y="14" width="7" height="7" rx="1.5" fill="#6366f1"/><rect x="14" y="14" width="7" height="7" rx="1.5" fill="#6366f1"/></svg>
+      Обзор
+    </button>
+    <button class="tab" data-tab="crons">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#f59e0b" stroke-width="2"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+      Расписание
+    </button>
+    <button class="tab" data-tab="sessions">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+      Сессии
+    </button>
+    <button class="tab" data-tab="files">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#22c55e" stroke-width="2"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg>
+      Файлы
+    </button>
+    <button class="tab" data-tab="skills">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#a855f7" stroke-width="2"><path d="M12 2l3.09 6.26L22 9.27l-5 4.87 1.18 6.88L12 17.77l-6.18 3.25L7 14.14 2 9.27l6.91-1.01L12 2z"/></svg>
+      Скиллы
+    </button>
+  </nav>
+
+  <!-- ───────── OVERVIEW ───────── -->
+  <section id="tab-overview" class="tab-content active">
+
+    <!-- Stat cards -->
+    <div class="stat-row" id="statRow">
+      <div class="stat-card loading-placeholder"></div>
+      <div class="stat-card loading-placeholder"></div>
+      <div class="stat-card loading-placeholder"></div>
+      <div class="stat-card loading-placeholder"></div>
+    </div>
+
+    <!-- Agents row -->
+    <div class="section-title">
+      <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#6366f1" stroke-width="2"><circle cx="12" cy="8" r="4"/><path d="M20 21a8 8 0 1 0-16 0"/></svg>
+      <span id="agentsSectionTitle">Агенты</span>
+    </div>
+    <div class="agent-row" id="agentRow">
+      <div class="agent-card loading-placeholder"></div>
+      <div class="agent-card loading-placeholder"></div>
+    </div>
+
+    <!-- Alerts + intel + active tasks -->
+    <div class="three-col">
+      <div class="card">
+        <div class="card-head">
+          <span class="card-icon" style="background:#fef2f2">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#ef4444" stroke-width="2"><path d="M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
+          </span>
+          <div><div class="card-title" id="alertsTitle">Алерты</div><div class="card-sub" id="alertsSub">проблемы и риски</div></div>
+        </div>
+        <div id="alertsList" class="list-container">
+          <div class="skeleton"></div><div class="skeleton"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span class="card-icon" style="background:#f0fdf4">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>
+          </span>
+          <div><div class="card-title" id="intelTitle">Рекомендации</div><div class="card-sub" id="intelSub">AI-анализ системы</div></div>
+        </div>
+        <div id="intelList" class="list-container">
+          <div class="skeleton"></div><div class="skeleton"></div>
+        </div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span class="card-icon" style="background:#eef2ff">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#4f46e5" stroke-width="2"><path d="M3 3h18v18H3z"/><path d="M7 16h10"/><path d="M7 12h7"/><path d="M7 8h10"/></svg>
+          </span>
+          <div><div class="card-title" id="activeTasksTitle">Активные задачи (live)</div><div class="card-sub" id="activeTasksSub">Telegram · Sub-agents · AI-fix</div></div>
+        </div>
+        <div id="activeTasksList" class="list-container">
+          <div class="skeleton"></div><div class="skeleton"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Incident center + health/report -->
+    <div class="two-col" style="margin-top:14px">
+      <div class="card">
+        <div class="card-head">
+          <span class="card-icon" style="background:#eff6ff">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="2"><path d="M3 12h18"/><path d="M12 3v18"/></svg>
+          </span>
+          <div><div class="card-title" id="incidentCenterTitle">Инцидент-центр</div><div class="card-sub" id="incidentCenterSub">single pane: алерты · действия · статус</div></div>
+        </div>
+        <div id="incidentList" class="list-container">
+          <div class="skeleton"></div><div class="skeleton"></div>
+        </div>
+
+        <div class="card-sub" style="margin:10px 0 4px" id="weeklyReviewTitle">Недельный review (7д)</div>
+        <div id="weeklyReviewBox" class="list-container"></div>
+      </div>
+
+      <div class="card">
+        <div class="card-head">
+          <span class="card-icon" style="background:#eef2ff">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#4f46e5" stroke-width="2"><path d="M3 3v18h18"/><path d="M7 14l4-4 3 3 5-6"/></svg>
+          </span>
+          <div><div class="card-title-row"><div class="card-title" id="healthTitle">Health Score + Отчёт</div><button id="healthHelpBtn" class="help-dot" title="Что означает Health score?">?</button></div><div class="card-sub" id="healthSub">по агентам и executive-summary</div></div>
+        </div>
+
+        <div class="card-sub" style="margin:10px 0 4px" id="usageGuardTitle">Лимиты и usage guard</div>
+        <div id="usageGuardList" class="list-container"></div>
+
+        <div class="card-sub" style="margin:10px 0 4px" id="healthAgentsTitle">Health score по агентам</div>
+        <div id="healthScoreList" class="list-container"></div>
+
+        <div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">
+          <button id="buildReportBtn" class="btn btn-sm">Собрать отчёт</button>
+          <button id="copyReportBtn" class="btn btn-sm btn-ghost">Копировать</button>
+        </div>
+        <pre id="reportPreview" style="margin-top:8px;white-space:pre-wrap;max-height:240px;overflow:auto;font-size:12px">Отчёт ещё не собран</pre>
+      </div>
+    </div>
+
+
+    <div id="taskReplayPanel" class="panel hidden" style="margin-top:14px">
+      <div class="panel-head">
+        <span id="taskReplayTitle">История этапов задачи</span>
+        <button class="icon-btn" id="closeTaskReplay">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <pre id="taskReplayContent">…</pre>
+    </div>
+
+  </section>
+
+  <!-- ───────── CRONS ───────── -->
+  <section id="tab-crons" class="tab-content hidden">
+    <div class="toolbar">
+      <div class="filter-group">
+        <label id="cronAgentLabel">Агент</label>
+        <select id="cronAgentFilter"></select>
+      </div>
+      <div class="spacer"></div>
+      <span class="helper-text" id="cronHelperText">Run · Enable/Disable · History · Delete</span>
+    </div>
+    <div id="cronList" class="card-list">
+      <div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>
+    </div>
+    <div id="cronHistoryPanel" class="panel hidden">
+      <div class="panel-head">
+        <span id="cronHistoryTitle">История запусков</span>
+        <button class="icon-btn" id="closeCronHistory">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+        </button>
+      </div>
+      <pre id="cronHistoryContent">…</pre>
+    </div>
+  </section>
+
+  <!-- ───────── SESSIONS ───────── -->
+  <section id="tab-sessions" class="tab-content hidden">
+    <div class="toolbar">
+      <div class="filter-group">
+        <label id="sessionAgentLabel">Агент</label>
+        <select id="sessionAgentFilter"></select>
+      </div>
+      <div class="filter-group grow">
+        <label id="sessionSearchLabel">Поиск</label>
+        <input id="sessionSearch" placeholder="ключ сессии, модель…" />
+      </div>
+    </div>
+    <div class="card">
+      <table id="sessionsTable">
+        <thead>
+          <tr>
+            <th id="thSessionAgent">Агент</th>
+            <th id="thSessionKey">Сессия</th>
+            <th id="thSessionModel">Модель</th>
+            <th id="thSessionAge">Возраст</th>
+            <th id="thSessionCtx">Использование контекста</th>
+          </tr>
+        </thead>
+        <tbody id="sessionsTbody">
+          <tr><td colspan="5"><div class="skeleton"></div></td></tr>
+        </tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- ───────── FILES ───────── -->
+  <section id="tab-files" class="tab-content hidden">
+    <div class="toolbar">
+      <div class="filter-group">
+        <label id="fileAgentLabel">Агент</label>
+        <select id="fileAgentFilter"></select>
+      </div>
+      <div class="filter-group grow">
+        <label id="fileSearchLabel">Поиск</label>
+        <input id="fileSearch" placeholder="имя файла, тег…" />
+      </div>
+    </div>
+    <div class="two-col">
+      <div>
+        <div class="file-list-label" id="fileListLabel">Выбери файл</div>
+        <div id="fileTree" class="file-tree">
+          <div class="skeleton"></div><div class="skeleton"></div><div class="skeleton"></div>
+        </div>
+      </div>
+      <div class="card file-viewer">
+        <div class="file-viewer-head">
+          <span id="fileViewTitle" class="file-view-title">Файл не выбран</span>
+          <div class="file-viewer-actions">
+            <input id="fileTagsInput" class="tag-input" placeholder="теги через запятую" />
+            <button id="saveTagsBtn" class="btn btn-sm" disabled>Сохранить теги</button>
+            <button id="showDiffBtn" class="btn btn-sm btn-ghost" disabled>Diff</button>
+          </div>
+        </div>
+        <pre id="fileView" class="file-content">Выбери файл для просмотра…</pre>
+        <div id="fileDiffBox" class="diff-box hidden">
+          <div class="diff-header" id="fileDiffHeader">Последние изменения</div>
+          <pre id="fileDiff"></pre>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ───────── SKILLS ───────── -->
+  <section id="tab-skills" class="tab-content hidden">
+    <div class="toolbar">
+      <div class="filter-group">
+        <label id="skillAgentLabel">Агент</label>
+        <select id="skillAgentFilter"></select>
+      </div>
+      <div class="filter-group grow">
+        <label id="skillSearchLabel">Поиск</label>
+        <input id="skillSearch" placeholder="название, описание…" />
+      </div>
+    </div>
+    <div id="skillsList" class="card-list">
+      <div class="skeleton"></div><div class="skeleton"></div>
+    </div>
+  </section>
+
+</div><!-- /app -->
+
+<div id="toast" class="toast hidden"></div>
+<script src="./app.js" type="module"></script>
+</body>
+</html>
