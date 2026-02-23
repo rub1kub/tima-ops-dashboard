@@ -45,6 +45,186 @@ function activateTab(tabName) {
   if (btn) btn.click();
 }
 
+/* ══════════════════════════════════════════════════════════════════════
+   ACTIVITY HEATMAP
+══════════════════════════════════════════════════════════════════════ */
+const DAY_LABELS_RU = ['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];
+const DAY_LABELS_EN = ['Mon','Tue','Wed','Thu','Fri','Sat','Sun'];
+
+async function loadHeatmap(silent=false) {
+  const card = $('#heatmapCard');
+  const grid = $('#heatmapGrid');
+  if (!card || !grid) return;
+  try {
+    const d = await api('activity/heatmap', 15000);
+    const matrix = d.matrix;
+    if (!matrix) { card.style.display = 'none'; return; }
+    // Check if there's any data
+    const total = matrix.flat().reduce((a, b) => a + b, 0);
+    if (total === 0 && silent) { card.style.display = 'none'; return; }
+    card.style.display = '';
+    // Update i18n labels
+    const titleEl = $('#heatmapTitle');
+    const subEl = $('#heatmapSub');
+    if (titleEl) titleEl.textContent = t('heatmapTitle');
+    if (subEl) subEl.textContent = t('heatmapSub');
+
+    const maxVal = Math.max(1, ...matrix.flat());
+    const days = L === 'en' ? DAY_LABELS_EN : DAY_LABELS_RU;
+    let html = `<div style="display:inline-block;font-size:11px">`;
+    // Hour labels
+    html += `<div style="display:flex;padding-left:28px;gap:0;margin-bottom:2px">`;
+    for (let h = 0; h < 24; h++) {
+      const show = h % 6 === 0;
+      html += `<div style="width:15px;text-align:center;color:var(--muted);font-size:10px">${show ? h : ''}</div>`;
+    }
+    html += `</div>`;
+    // Grid rows
+    for (let d2 = 0; d2 < 7; d2++) {
+      html += `<div style="display:flex;align-items:center;gap:0;margin-bottom:2px">`;
+      html += `<div style="width:26px;font-size:10px;color:var(--muted);text-align:right;padding-right:4px;flex-shrink:0">${days[d2]}</div>`;
+      for (let h = 0; h < 24; h++) {
+        const val = matrix[d2][h];
+        const pct = val / maxVal;
+        let bg;
+        if (val === 0) bg = 'var(--border)';
+        else if (pct < 0.25) bg = 'rgba(99,102,241,0.2)';
+        else if (pct < 0.6) bg = 'rgba(99,102,241,0.55)';
+        else bg = 'rgba(99,102,241,1)';
+        const dayStr = L === 'en' ? DAY_LABELS_EN[d2] : DAY_LABELS_RU[d2];
+        html += `<div style="width:13px;height:13px;background:${bg};border-radius:2px;margin:1px;flex-shrink:0;cursor:default" title="${dayStr} ${h}:00 — ${val}"></div>`;
+      }
+      html += `</div>`;
+    }
+    // Legend
+    html += `<div style="display:flex;align-items:center;gap:4px;margin-top:6px;padding-left:28px">
+      <span style="font-size:10px;color:var(--muted)">${t('heatmapLess')}</span>
+      ${[0,0.15,0.4,0.7,1].map(p=>{
+        const bg = p===0?'var(--border)':p<0.25?'rgba(99,102,241,0.2)':p<0.6?'rgba(99,102,241,0.55)':'rgba(99,102,241,1)';
+        return `<div style="width:11px;height:11px;background:${bg};border-radius:2px"></div>`;
+      }).join('')}
+      <span style="font-size:10px;color:var(--muted)">${t('heatmapMore')}</span>
+    </div>`;
+    html += `</div>`;
+    grid.innerHTML = html;
+  } catch {
+    if (!silent && card) card.style.display = 'none';
+  }
+}
+
+/* ══════════════════════════════════════════════════════════════════════
+   AI CHAT WIDGET
+══════════════════════════════════════════════════════════════════════ */
+const CHAT_STORAGE_KEY = 'ops.chat.v1';
+let chatHistory = [];
+
+function loadChatHistory() {
+  try { chatHistory = JSON.parse(sessionStorage.getItem(CHAT_STORAGE_KEY) || '[]'); } catch { chatHistory = []; }
+}
+
+function saveChatHistory() {
+  try { sessionStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(chatHistory.slice(-20))); } catch {}
+}
+
+function appendChatBubble(role, content, loading=false) {
+  const box = $('#chatMessages');
+  if (!box) return;
+  const isUser = role === 'user';
+  const bg = isUser ? 'var(--accent)' : 'var(--bg)';
+  const color = isUser ? '#fff' : 'var(--text)';
+  const align = isUser ? 'flex-end' : 'flex-start';
+  const id = loading ? 'chat-typing-indicator' : '';
+  const inner = loading
+    ? `<span class="chat-typing-dots">···</span>`
+    : `<span style="white-space:pre-wrap;word-break:break-word">${esc(content)}</span>`;
+  const el = document.createElement('div');
+  el.style.cssText = `display:flex;justify-content:${align};${id?'':''}`;
+  if (id) el.id = id;
+  el.innerHTML = `<div style="max-width:85%;background:${bg};color:${color};border:1px solid var(--border);border-radius:10px;padding:8px 12px;font-size:13px">${inner}</div>`;
+  box.appendChild(el);
+  box.scrollTop = box.scrollHeight;
+  return el;
+}
+
+async function sendChatMessage() {
+  const input = $('#chatInput');
+  if (!input) return;
+  const msg = input.value.trim();
+  if (!msg) return;
+  input.value = '';
+  input.disabled = true;
+
+  appendChatBubble('user', msg);
+  chatHistory.push({ role: 'user', content: msg });
+
+  const typingEl = appendChatBubble('assistant', '', true);
+  try {
+    const res = await fetch('./api/chat', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: msg, history: chatHistory.slice(-6), lang: L }),
+      signal: AbortSignal.timeout(50_000),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (typingEl) typingEl.remove();
+    if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
+    const reply = data.reply || '';
+    chatHistory.push({ role: 'assistant', content: reply });
+    saveChatHistory();
+    appendChatBubble('assistant', reply);
+  } catch (err) {
+    if (typingEl) typingEl.remove();
+    appendChatBubble('assistant', `${t('chatError')}: ${esc(err.message)}`);
+  } finally {
+    input.disabled = false;
+    input.focus();
+  }
+}
+
+function initChatWidget() {
+  loadChatHistory();
+  const toggle = $('#chatToggle');
+  const panel = $('#chatPanel');
+  const closeBtn = $('#chatClose');
+  const sendBtn = $('#chatSend');
+  const input = $('#chatInput');
+  if (!toggle || !panel) return;
+
+  // Update i18n labels
+  const titleEl = $('#chatTitle');
+  const inputEl = $('#chatInput');
+  if (titleEl) titleEl.textContent = t('chatTitle');
+  if (inputEl) inputEl.placeholder = t('chatPlaceholder');
+  if (sendBtn) sendBtn.textContent = t('chatSend');
+
+  toggle.addEventListener('click', () => {
+    const isHidden = panel.classList.contains('hidden');
+    panel.classList.toggle('hidden', !isHidden);
+    if (isHidden) {
+      const box = $('#chatMessages');
+      if (box && !box.children.length) {
+        // Render history
+        if (chatHistory.length) {
+          chatHistory.forEach(m => appendChatBubble(m.role, m.content));
+        } else {
+          appendChatBubble('assistant', t('chatWelcome'));
+        }
+      }
+      input?.focus();
+    }
+  });
+
+  closeBtn?.addEventListener('click', () => panel.classList.add('hidden'));
+
+  sendBtn?.addEventListener('click', sendChatMessage);
+  input?.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      sendChatMessage();
+    }
+  });
+}
+
 function initQuickActions() {
   document.addEventListener('keydown', (e) => {
     if (!(e.ctrlKey || e.metaKey) || String(e.key).toLowerCase() !== 'k') return;
@@ -96,6 +276,21 @@ const i18n = {
     noItems:'Нет данных', loading:'Загрузка…', error:'Ошибка',
     incidentCenterEmpty:'Нет инцидентов', usageGuardEmpty:'Нет данных об использовании',
     runbook:'Runbook',
+    editCron:'✏️ Изменить', saveCron:'💾 Сохранить', cancelEdit:'Отмена',
+    cronEditTitle:'Редактировать задачу',
+    cronEditSchedLabel:'Расписание (cron или мс)',
+    cronEditMsgLabel:'Текст задачи',
+    cronEditTimeoutLabel:'Таймаут (мс)',
+    cronEditSessionLabel:'Сессия',
+    cronEditDeliveryLabel:'Доставка',
+    viewTranscript:'👁 История', transcriptTitle:'История сессии',
+    noHistory:'История пуста', showMore:'Показать ещё', showLess:'Свернуть',
+    heatmapTitle:'Активность по часам', heatmapSub:'сессии и cron за 7 дней',
+    heatmapLess:'меньше', heatmapMore:'больше',
+    chatTitle:'💬 AI Chat', chatPlaceholder:'Спроси про агентов, cron, бюджет…',
+    chatSend:'→', chatWelcome:'Привет! Спроси что-нибудь про систему.',
+    chatError:'Ошибка подключения к AI',
+    cronCostBadge:'7д: ~$',
   },
   en: {
     overview:'Overview', crons:'Schedule', sessions:'Sessions', files:'Files', skills:'Skills',
@@ -127,6 +322,21 @@ const i18n = {
     noItems:'No data', loading:'Loading…', error:'Error',
     incidentCenterEmpty:'No incidents', usageGuardEmpty:'No usage data',
     runbook:'Runbook',
+    editCron:'✏️ Edit', saveCron:'💾 Save', cancelEdit:'Cancel',
+    cronEditTitle:'Edit cron job',
+    cronEditSchedLabel:'Schedule (cron expr or ms interval)',
+    cronEditMsgLabel:'Task message',
+    cronEditTimeoutLabel:'Timeout (ms)',
+    cronEditSessionLabel:'Session target',
+    cronEditDeliveryLabel:'Delivery mode',
+    viewTranscript:'👁 History', transcriptTitle:'Session history',
+    noHistory:'No history yet', showMore:'Show more', showLess:'Show less',
+    heatmapTitle:'Activity heatmap', heatmapSub:'sessions & crons last 7 days',
+    heatmapLess:'less', heatmapMore:'more',
+    chatTitle:'💬 AI Chat', chatPlaceholder:'Ask about agents, crons, budget…',
+    chatSend:'→', chatWelcome:'Hi! Ask me anything about your system.',
+    chatError:'Failed to connect to AI',
+    cronCostBadge:'7d: ~$',
   }
 };
 
@@ -1132,7 +1342,7 @@ function bindReportActions() {
 }
 
 /* Фоновое обновление — без скелетонов */
-function refreshAll() { loadStats(true); loadAgentRow(true); loadAlerts(true); loadIntel(true); loadIncidentCenter(true); loadActiveTasks(true); loadWeeklyReview(true); loadUsageGuard(true); loadHealthScore(true); loadUpdateState(); }
+function refreshAll() { loadStats(true); loadAgentRow(true); loadAlerts(true); loadIntel(true); loadIncidentCenter(true); loadActiveTasks(true); loadWeeklyReview(true); loadUsageGuard(true); loadHealthScore(true); loadUpdateState(); loadHeatmap(true); }
 
 function setOpStatusText(container, text, cls='') {
   const el = container?.querySelector('.alert-op-status');
@@ -1310,13 +1520,14 @@ function renderCronCard(j, canOp, canAdm) {
   const diff=j.nextRunAt?new Date(j.nextRunAt)-Date.now():null;
   const nxt=diff==null?'—':diff<0?(L==='en'?'now':'сейчас'):diff<3600000?(L==='en'?'in '+Math.floor(diff/60000)+'m':'через '+Math.floor(diff/60000)+' мин'):(L==='en'?'in '+Math.floor(diff/3600000)+'h '+Math.floor((diff%3600000)/60000)+'m':'через '+Math.floor(diff/3600000)+'ч '+Math.floor((diff%3600000)/60000)+'м');
   const disabledPill=j.enabled?'':`<span class="pill pill-muted">${L==='en'?'Disabled':'Отключён'}</span>`;
+  const costBadge=`<span class="pill pill-muted" id="cron-cost-${esc(j.id)}" style="font-size:10px">...</span>`;
   const nextLbl=L==='en'?'Next':'Следующий', lastLbl=L==='en'?'Last':'Последний';
   return `<div class="cron-card" data-id="${esc(j.id)}" data-enabled="${j.enabled?'1':'0'}">
     <div class="cron-head">
       <div class="cron-status" style="background:${dot}"></div>
       <div class="cron-name">${esc(j.name)}</div>
       <span class="pill" style="background:${c.bg};color:${c.text};font-size:10px">${esc(j.agentId)}</span>
-      ${errB}${stB}${disabledPill}
+      ${errB}${stB}${disabledPill}${costBadge}
     </div>
     <div class="cron-meta">${nextLbl}: ${nxt} · ${lastLbl}: ${j.lastRunAt?new Date(j.lastRunAt).toLocaleString():'—'}</div>
     <div class="cron-actions">
@@ -1324,7 +1535,8 @@ function renderCronCard(j, canOp, canAdm) {
       <button class="btn btn-sm btn-ghost" data-action="toggle" ${canOp?'':'disabled'}>${j.enabled?`⏸ ${t('disable')}`:`▶ ${t('enable')}`}</button>
       <button class="btn btn-sm btn-ghost" data-action="history">📋 ${t('history')}</button>
       <button class="btn btn-sm btn-ghost" data-action="dry">🧪 Dry-run</button>
-      <button class="btn btn-sm btn-danger" data-action="delete" ${canAdm?'':'disabled'}>🗑 Удалить</button>
+      <button class="btn btn-sm btn-ghost" data-action="edit" ${canOp?'':'disabled'}>${t('editCron')}</button>
+      <button class="btn btn-sm btn-danger" data-action="delete" ${canAdm?'':'disabled'}>🗑 ${L==='en'?'Delete':'Удалить'}</button>
     </div>
   </div>`;
 }
@@ -1348,7 +1560,95 @@ async function loadCrons(silent=false) {
       renderCronSection(t('telegramCrons'), tg, canOp, canAdm) +
       renderCronSection(t('otherCrons'), other, canOp, canAdm);
     $('#cronList').innerHTML = html || `<div style="padding:16px;color:var(--muted);text-align:center">${L==='en'?'No jobs':'Нет задач'}</div>`;
+    // Load cost badges asynchronously
+    setTimeout(() => loadCronCosts(d.jobs || []), 100);
   } catch(err) { $('#cronList').innerHTML=`<div style="color:var(--red);padding:12px">${t('error')}: ${esc(err.message)}</div>`; }
+}
+
+async function loadCronCosts(jobs) {
+  await Promise.allSettled(jobs.map(async j => {
+    try {
+      const d = await api(`cron/cost?id=${encodeURIComponent(j.id)}`);
+      const el = $(`#cron-cost-${j.id.replace(/[^a-zA-Z0-9-]/g, '-')}`);
+      if (!el) return;
+      if (d.runs7d === 0 && d.costUsd === 0) {
+        el.textContent = '7d: --';
+      } else {
+        const cost = d.costUsd >= 0.01 ? `~$${d.costUsd.toFixed(2)}` : `~$${d.costUsd.toFixed(4)}`;
+        el.textContent = `7d: ${d.runs7d}x ${cost}`;
+        el.style.background = 'var(--amber-soft, rgba(245,158,11,0.1))';
+        el.style.color = 'var(--amber, #f59e0b)';
+      }
+    } catch {}
+  }));
+}
+
+function openCronEditModal(id, job) {
+  const modal = $('#cronEditModal');
+  if (!modal) return;
+  $('#cronEditId').value = id;
+  // Pre-fill fields from job data
+  const sched = job?.schedule;
+  if (sched?.kind === 'every') {
+    $('#cronEditSched').value = String(sched.everyMs || '');
+  } else if (sched?.kind === 'cron') {
+    $('#cronEditSched').value = sched.expr || '';
+  } else {
+    $('#cronEditSched').value = '';
+  }
+  const msg = job?.payload?.message || '';
+  $('#cronEditMsg').value = msg;
+  const timeout = job?.payload?.timeoutSeconds ? job.payload.timeoutSeconds * 1000 : (job?.timeout || '');
+  $('#cronEditTimeout').value = timeout || '';
+  $('#cronEditSessionTarget').value = job?.sessionTarget || 'isolated';
+  $('#cronEditDelivery').value = job?.delivery?.mode || 'announce';
+  // Update i18n labels
+  if ($('#cronEditTitle')) $('#cronEditTitle').textContent = t('cronEditTitle') + ' · ' + (job?.name || id);
+  if ($('#cronEditSchedLabel')) $('#cronEditSchedLabel').textContent = t('cronEditSchedLabel');
+  if ($('#cronEditMsgLabel')) $('#cronEditMsgLabel').textContent = t('cronEditMsgLabel');
+  if ($('#cronEditTimeoutLabel')) $('#cronEditTimeoutLabel').textContent = t('cronEditTimeoutLabel');
+  if ($('#cronEditSessionLabel')) $('#cronEditSessionLabel').textContent = t('cronEditSessionLabel');
+  if ($('#cronEditDeliveryLabel')) $('#cronEditDeliveryLabel').textContent = t('cronEditDeliveryLabel');
+  if ($('#saveCronEdit')) $('#saveCronEdit').textContent = t('saveCron');
+  if ($('#cancelCronEdit')) $('#cancelCronEdit').textContent = t('cancelEdit');
+  modal.classList.remove('hidden');
+}
+
+async function saveCronEdit() {
+  const id = $('#cronEditId').value;
+  if (!id) return;
+  const schedRaw = ($('#cronEditSched').value || '').trim();
+  let schedule;
+  if (schedRaw) {
+    if (/^\d+$/.test(schedRaw)) {
+      schedule = { kind: 'every', everyMs: Number(schedRaw) };
+    } else if (schedRaw.split(' ').length >= 5) {
+      schedule = { kind: 'cron', expr: schedRaw };
+    }
+  }
+  const patch = {};
+  if (schedule) patch.schedule = schedule;
+  const msg = ($('#cronEditMsg').value || '').trim();
+  if (msg) patch.payloadMessage = msg;
+  const to = Number($('#cronEditTimeout').value || 0);
+  if (to > 0) patch.timeout = to;
+  patch.sessionTarget = $('#cronEditSessionTarget').value;
+  patch.deliveryMode = $('#cronEditDelivery').value;
+
+  const btn = $('#saveCronEdit');
+  btn.disabled = true;
+  btn.textContent = t('loading');
+  try {
+    await post('cron/update', { id, ...patch });
+    toast(L==='en' ? 'Cron updated ✓' : 'Задача обновлена ✓');
+    $('#cronEditModal').classList.add('hidden');
+    await loadCrons(true);
+  } catch (err) {
+    toast(err.message || (L==='en' ? 'Update failed' : 'Ошибка обновления'), 'err');
+  } finally {
+    btn.disabled = false;
+    btn.textContent = t('saveCron');
+  }
 }
 
 async function showCronHistory(id) {
@@ -1368,6 +1668,12 @@ async function onCronClick(e) {
 
   if (action==='history') {
     await showCronHistory(id);
+    return;
+  }
+
+  if (action==='edit') {
+    const job = (S.lastCrons || []).find(j => j.id === id);
+    openCronEditModal(id, job);
     return;
   }
 
@@ -1429,7 +1735,8 @@ function renderSessionGroup(label, items) {
       <select class="session-model-select" data-key="${esc(s.key)}" ${canSetModel?'':'disabled'}>${modelOptions(s.model)}</select>
       <button class="btn btn-sm btn-ghost" data-action="session-model-set" data-key="${esc(s.key)}" ${canSetModel?'':'disabled'}>${t('apply')}</button>
     </div>`;
-    return `<tr><td><span class="pill" style="background:${c.bg};color:${c.text}">${esc(s.agentId)}</span></td><td style="font-size:12px;color:var(--muted)" title="${esc(s.key)}">${esc(s.key.slice(0,50))}${s.key.length>50?'…':''}</td><td style="font-size:12px">${modelControl}</td><td>${esc(humanDur(s.ageMs))}</td><td>${bar}</td></tr>`;
+    const viewBtn = `<button class="btn btn-sm btn-ghost" data-action="view-transcript" data-key="${esc(s.key)}" style="padding:2px 6px;font-size:11px" title="${t('viewTranscript')}">👁</button>`;
+    return `<tr><td><span class="pill" style="background:${c.bg};color:${c.text}">${esc(s.agentId)}</span></td><td style="font-size:12px;color:var(--muted)" title="${esc(s.key)}">${esc(s.key.slice(0,50))}${s.key.length>50?'…':''} ${viewBtn}</td><td style="font-size:12px">${modelControl}</td><td>${esc(humanDur(s.ageMs))}</td><td>${bar}</td></tr>`;
   }).join('');
   return `<tr><td colspan="5" style="font-size:12px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.04em;background:var(--bg)">${esc(label)} (${items.length})</td></tr>` + rows;
 }
@@ -1454,6 +1761,13 @@ async function loadSessions(silent=false) {
 }
 
 async function onSessionAction(e) {
+  const viewBtn = e.target.closest('[data-action="view-transcript"]');
+  if (viewBtn) {
+    const key = viewBtn.dataset.key;
+    if (key) await openTranscriptPanel(key);
+    return;
+  }
+
   const btn = e.target.closest('[data-action="session-model-set"]');
   if (!btn) return;
   const key = btn.dataset.key;
@@ -1475,6 +1789,51 @@ async function onSessionAction(e) {
     toast(err.message || (L==='en'?'Failed to change model':'Не удалось сменить модель'), 'err');
   } finally {
     btn.disabled = false;
+  }
+}
+
+async function openTranscriptPanel(sessionKey) {
+  const panel = $('#transcriptPanel');
+  const msgs = $('#transcriptMessages');
+  const titleEl = $('#transcriptTitle');
+  if (!panel || !msgs) return;
+  panel.classList.remove('hidden');
+  if (titleEl) titleEl.textContent = t('transcriptTitle') + ': ' + sessionKey.slice(0, 50);
+  msgs.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:8px">${t('loading')}</div>`;
+  try {
+    const d = await api(`session/history?key=${encodeURIComponent(sessionKey)}&limit=40`);
+    const messages = d.messages || [];
+    if (!messages.length) {
+      msgs.innerHTML = `<div style="color:var(--muted);font-size:13px;padding:8px">${t('noHistory')}${d.errorNote ? ` (${esc(d.errorNote)})` : ''}</div>`;
+      return;
+    }
+    msgs.innerHTML = messages.map(m => {
+      const role = String(m.role || m.type || 'unknown');
+      const isUser = role === 'human' || role === 'user';
+      const isTool = role === 'tool' || role === 'tool_result' || m.tool_calls?.length;
+      const content = String(m.content || m.text || (Array.isArray(m.content) ? m.content.map(c => c.text || '').join(' ') : '') || '');
+      const shortContent = content.length > 500 ? content.slice(0, 500) : content;
+      const hasMore = content.length > 500;
+      const ts = m.createdAt || m.timestamp || m.ts || '';
+      const tsStr = ts ? new Date(ts).toLocaleTimeString() : '';
+      if (isTool) {
+        const toolName = m.tool_calls?.[0]?.function?.name || m.name || 'tool';
+        return `<details style="margin:2px 0;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:4px 8px"><summary style="font-size:11px;color:var(--muted);cursor:pointer">🔧 ${esc(toolName)} ${tsStr}</summary><pre style="font-size:11px;white-space:pre-wrap;word-break:break-word;margin:4px 0;max-height:200px;overflow-y:auto">${esc(shortContent)}${hasMore?`\n…(${content.length - 500} ${L==='en'?'more chars':'символов ещё'})`:''}</pre></details>`;
+      }
+      const bg = isUser ? 'var(--accent)' : 'var(--surface-2, var(--card-bg, var(--bg)))';
+      const color = isUser ? '#fff' : 'var(--text)';
+      const align = isUser ? 'flex-end' : 'flex-start';
+      return `<div style="display:flex;justify-content:${align}">
+        <div style="max-width:85%;background:${bg};color:${color};border:1px solid var(--border);border-radius:10px;padding:8px 12px;font-size:13px">
+          ${tsStr ? `<div style="font-size:10px;opacity:.6;margin-bottom:3px">${tsStr}</div>` : ''}
+          <div style="white-space:pre-wrap;word-break:break-word">${esc(shortContent)}${hasMore?`<span style="opacity:.5;font-size:11px"> …(${content.length - 500} ${L==='en'?'more':'ещё'})</span>`:''}</div>
+        </div>
+      </div>`;
+    }).join('');
+    // Scroll to bottom
+    msgs.scrollTop = msgs.scrollHeight;
+  } catch(err) {
+    msgs.innerHTML = `<div style="color:var(--red);font-size:13px;padding:8px">${t('error')}: ${esc(err.message)}</div>`;
   }
 }
 
@@ -1699,10 +2058,20 @@ async function boot() {
   // 2. Events
   initTabs();
   initQuickActions();
+  initChatWidget();
   $('#refreshBtn').addEventListener('click', ()=>{ refreshAll(); toast(t('updating')); });
   $('#themeBtn')?.addEventListener('click', toggleTheme);
   $('#langBtn')?.addEventListener('click', ()=>setLang(L==='ru'?'en':'ru'));
   $('#updateBtn')?.addEventListener('click', runOpenclawUpdate);
+
+  // Cron edit modal
+  $('#closeCronEdit')?.addEventListener('click', ()=>$('#cronEditModal')?.classList.add('hidden'));
+  $('#cancelCronEdit')?.addEventListener('click', ()=>$('#cronEditModal')?.classList.add('hidden'));
+  $('#saveCronEdit')?.addEventListener('click', saveCronEdit);
+  $('#cronEditModal')?.addEventListener('click', e => { if (e.target === $('#cronEditModal')) $('#cronEditModal').classList.add('hidden'); });
+
+  // Session transcript panel
+  $('#closeTranscript')?.addEventListener('click', ()=>$('#transcriptPanel')?.classList.add('hidden'));
 
   $('#cronAgentFilter').addEventListener('change', ()=>loadCrons(true));
   $('#cronList').addEventListener('click', onCronClick);
@@ -1744,6 +2113,7 @@ async function boot() {
   loadUsageGuard(false);
   loadHealthScore(false);
   loadUpdateState();
+  loadHeatmap(false);
 
   // 4.1 Прогрев тяжелых вкладок в фоне (без скелетонов)
   loadSkills(true);

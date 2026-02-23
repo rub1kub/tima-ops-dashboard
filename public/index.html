@@ -91,6 +91,17 @@
       <div class="agent-card loading-placeholder"></div>
     </div>
 
+    <!-- Activity Heatmap -->
+    <div id="heatmapCard" class="card" style="margin-top:14px;display:none">
+      <div class="card-head">
+        <span class="card-icon" style="background:#f0fdf4">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#16a34a" stroke-width="2"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4M8 2v4M3 10h18"/></svg>
+        </span>
+        <div><div class="card-title" id="heatmapTitle">Активность по часам</div><div class="card-sub" id="heatmapSub">сессии и cron за 7 дней</div></div>
+      </div>
+      <div id="heatmapGrid" style="overflow-x:auto;padding:4px 0 8px"></div>
+    </div>
+
     <!-- Alerts + intel + active tasks -->
     <div class="three-col">
       <div class="card">
@@ -293,6 +304,80 @@
 </div><!-- /app -->
 
 <div id="toast" class="toast hidden"></div>
+
+<!-- ── Activity Heatmap (injected into Overview after agent-row) ── -->
+<!-- Rendered by loadHeatmap() into #heatmapCard -->
+
+<!-- ── Session Transcript Panel ── -->
+<div id="transcriptPanel" class="panel hidden" style="position:fixed;top:0;right:0;width:420px;max-width:95vw;height:100vh;z-index:900;display:flex;flex-direction:column;background:var(--surface);border-left:1px solid var(--border);box-shadow:-4px 0 24px rgba(0,0,0,.15)">
+  <div class="panel-head" style="flex-shrink:0">
+    <span id="transcriptTitle" style="font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:340px">История сессии</span>
+    <button class="icon-btn" id="closeTranscript">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+    </button>
+  </div>
+  <div id="transcriptMessages" style="flex:1;overflow-y:auto;padding:12px 14px;display:flex;flex-direction:column;gap:10px"></div>
+</div>
+
+<!-- ── Cron Edit Panel (modal-style) ── -->
+<div id="cronEditModal" class="hidden" style="position:fixed;inset:0;z-index:950;display:flex;align-items:center;justify-content:center;background:rgba(0,0,0,.45)">
+  <div style="background:var(--surface);border:1px solid var(--border);border-radius:12px;width:480px;max-width:95vw;padding:20px;box-shadow:0 8px 40px rgba(0,0,0,.25)">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
+      <div style="font-weight:700;font-size:15px" id="cronEditTitle">Редактировать задачу</div>
+      <button class="icon-btn" id="closeCronEdit"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+    </div>
+    <input type="hidden" id="cronEditId" />
+    <div style="display:flex;flex-direction:column;gap:12px">
+      <div>
+        <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px" id="cronEditSchedLabel">Расписание (cron-выражение или интервал мс)</label>
+        <input id="cronEditSched" class="tag-input" style="width:100%" placeholder="0 9 * * * или 3600000" />
+      </div>
+      <div>
+        <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px" id="cronEditMsgLabel">Текст задачи</label>
+        <textarea id="cronEditMsg" rows="4" class="tag-input" style="width:100%;resize:vertical;font-family:monospace;font-size:12px"></textarea>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">
+        <div>
+          <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px" id="cronEditTimeoutLabel">Таймаут (мс)</label>
+          <input id="cronEditTimeout" class="tag-input" style="width:100%" type="number" placeholder="120000" />
+        </div>
+        <div>
+          <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px" id="cronEditSessionLabel">Сессия</label>
+          <select id="cronEditSessionTarget" class="tag-input" style="width:100%">
+            <option value="isolated">isolated</option>
+            <option value="main">main</option>
+          </select>
+        </div>
+      </div>
+      <div>
+        <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px" id="cronEditDeliveryLabel">Доставка</label>
+        <select id="cronEditDelivery" class="tag-input" style="width:100%">
+          <option value="announce">announce</option>
+          <option value="none">none</option>
+        </select>
+      </div>
+    </div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:18px">
+      <button class="btn btn-sm btn-ghost" id="cancelCronEdit">Отмена</button>
+      <button class="btn btn-sm" id="saveCronEdit">💾 Сохранить</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── AI Chat Widget ── -->
+<button id="chatToggle" title="AI Chat" style="position:fixed;bottom:24px;right:24px;width:52px;height:52px;border-radius:50%;z-index:1000;background:var(--accent);color:#fff;border:none;cursor:pointer;font-size:22px;box-shadow:0 4px 16px rgba(0,0,0,.25);display:flex;align-items:center;justify-content:center">💬</button>
+<div id="chatPanel" class="hidden" style="position:fixed;bottom:88px;right:24px;width:380px;max-width:calc(100vw - 32px);max-height:520px;border-radius:12px;z-index:999;background:var(--surface);border:1px solid var(--border);box-shadow:0 8px 32px rgba(0,0,0,.22);display:flex;flex-direction:column">
+  <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px 10px;border-bottom:1px solid var(--border);flex-shrink:0">
+    <span style="font-weight:700;font-size:14px" id="chatTitle">💬 AI Chat</span>
+    <button class="icon-btn" id="chatClose"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+  </div>
+  <div id="chatMessages" style="flex:1;overflow-y:auto;padding:12px 14px;display:flex;flex-direction:column;gap:8px;min-height:200px;max-height:340px"></div>
+  <div style="padding:10px 12px;border-top:1px solid var(--border);display:flex;gap:8px;flex-shrink:0">
+    <textarea id="chatInput" rows="2" class="tag-input" style="flex:1;resize:none;font-size:13px" id="chatInput" placeholder="Спроси про агентов, cron, бюджет…"></textarea>
+    <button class="btn btn-sm" id="chatSend" style="align-self:flex-end">→</button>
+  </div>
+</div>
+
 <script src="./app.js" type="module"></script>
 </body>
 </html>

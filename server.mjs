@@ -1760,6 +1760,153 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, action: 'delete', id: body.id, output });
     }
 
+    // ── Cron edit (update) ──────────────────────────────────────────────────────
+    if (pathname === '/api/cron/update' && req.method === 'POST') {
+      enforceMutationRate(me);
+      assertRole(me, ['operator', 'admin']);
+      const body = await readJsonBody(req);
+      const id = validateCronId(body.id);
+      const patch = {};
+      if (body.schedule !== undefined) patch.schedule = body.schedule;
+      if (body.payloadMessage !== undefined) patch.payloadMessage = String(body.payloadMessage || '');
+      if (body.timeout !== undefined) patch.timeout = Number(body.timeout) || 0;
+      if (body.sessionTarget !== undefined) patch.sessionTarget = body.sessionTarget;
+      if (body.deliveryMode !== undefined) patch.deliveryMode = body.deliveryMode;
+      const params = JSON.stringify({ id, patch });
+      const out = await runCmd(`${OPENCLAW_BIN} gateway call cron.update --params ${shQuote(params)} --json 2>/dev/null`, 30_000);
+      const parsed = extractJson(out);
+      invalidate(['crons', 'status']);
+      await logOperatorEvent({ kind: 'cron', title: 'Cron updated', details: id, actor: me.user || 'unknown', level: 'info' });
+      await auditLog(me, 'cron.update', { id, patch }, true);
+      return json(res, 200, { ok: true, id, result: parsed });
+    }
+
+    // ── Session transcript history ──────────────────────────────────────────────
+    if (pathname.startsWith('/api/session/history')) {
+      const key = url.searchParams.get('key') || '';
+      if (!key) return json(res, 400, { error: 'key is required' });
+      const sessionKey = validateSessionKey(key);
+      const limit = Math.max(1, Math.min(100, Number(url.searchParams.get('limit') || 40)));
+      let messages = [];
+      let errorNote = null;
+      try {
+        const params = JSON.stringify({ sessionKey, limit });
+        const out = await runCmd(`${OPENCLAW_BIN} gateway call sessions.history --params ${shQuote(params)} --json 2>/dev/null`, 25_000);
+        const parsed = extractJson(out);
+        messages = Array.isArray(parsed?.messages) ? parsed.messages : (Array.isArray(parsed) ? parsed : []);
+      } catch (e) {
+        errorNote = e.message?.slice(0, 200) || 'history unavailable';
+      }
+      return json(res, 200, { ok: true, sessionKey, messages, errorNote });
+    }
+
+    // ── Cron cost tracker ───────────────────────────────────────────────────────
+    if (pathname.startsWith('/api/cron/cost')) {
+      const cronId = url.searchParams.get('id') || '';
+      if (!cronId) return json(res, 400, { error: 'id is required' });
+      validateCronId(cronId);
+      // Try to derive cost from run history (cron.runs already fetched via cronRuns())
+      let runs7d = 0, inputTokens = 0, outputTokens = 0;
+      try {
+        const runsData = await cronRuns(cronId, 100);
+        const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+        const recent = (runsData?.runs || runsData?.entries || []).filter(r => {
+          const ts = r?.startedAt ? new Date(r.startedAt).getTime() : (r?.ts || 0);
+          return ts > sevenDaysAgo;
+        });
+        runs7d = recent.length;
+        for (const r of recent) {
+          inputTokens += Number(r?.tokens?.input || r?.inputTokens || 0);
+          outputTokens += Number(r?.tokens?.output || r?.outputTokens || 0);
+        }
+      } catch {}
+      const costUsd = (inputTokens / 1_000_000) * 3 + (outputTokens / 1_000_000) * 15;
+      return json(res, 200, { ok: true, cronId, runs7d, inputTokens, outputTokens, costUsd: Math.round(costUsd * 1000) / 1000 });
+    }
+
+    // ── Activity heatmap ────────────────────────────────────────────────────────
+    if (pathname === '/api/activity/heatmap') {
+      const status = await openclawStatus();
+      const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+      // matrix[dayOfWeek 0=Mon..6=Sun][hour 0-23]
+      const matrix = Array.from({ length: 7 }, () => new Array(24).fill(0));
+      const sessions = status?.sessions?.recent || [];
+      for (const s of sessions) {
+        const updMs = s?.updatedAt ? new Date(s.updatedAt).getTime() : 0;
+        if (updMs < sevenDaysAgo || !updMs) continue;
+        const d = new Date(updMs);
+        let dow = d.getDay(); // 0=Sun
+        dow = dow === 0 ? 6 : dow - 1; // convert to Mon=0..Sun=6
+        const hr = d.getHours();
+        if (dow >= 0 && dow < 7 && hr >= 0 && hr < 24) matrix[dow][hr]++;
+      }
+      // Also add cron run data from recent sessions
+      const cronSessions = sessions.filter(s => String(s?.kind || s?.key || '').includes('cron'));
+      for (const s of cronSessions) {
+        const creMs = s?.createdAt ? new Date(s.createdAt).getTime() : 0;
+        if (creMs < sevenDaysAgo || !creMs) continue;
+        const d = new Date(creMs);
+        let dow = d.getDay();
+        dow = dow === 0 ? 6 : dow - 1;
+        const hr = d.getHours();
+        if (dow >= 0 && dow < 7 && hr >= 0 && hr < 24) matrix[dow][hr]++;
+      }
+      return json(res, 200, { ok: true, matrix, updatedAt: new Date().toISOString() });
+    }
+
+    // ── AI Chat endpoint ────────────────────────────────────────────────────────
+    if (pathname === '/api/chat' && req.method === 'POST') {
+      const body = await readJsonBody(req);
+      const userMessage = String(body.message || '').trim().slice(0, 2000);
+      const history = Array.isArray(body.history) ? body.history.slice(-8) : [];
+      const lang = String(body.lang || 'ru').toLowerCase() === 'en' ? 'en' : 'ru';
+      if (!userMessage) return json(res, 400, { error: 'message is required' });
+
+      let summary;
+      try { summary = await cached('summary-api', () => collectSummary(), 30_000); } catch { summary = {}; }
+
+      const langNote = lang === 'en' ? 'Respond in English.' : 'Отвечай на русском языке.';
+      const systemPrompt = `You are an AI assistant for the Tima Ops Dashboard — a monitoring panel for OpenClaw AI agents. ${langNote}
+
+Current state (${new Date().toISOString()}):
+- Sessions: ${summary?.openclaw?.totalSessions ?? '?'} total, ${summary?.openclaw?.activeSessions ?? '?'} active
+- Crons: ${summary?.openclaw?.totalCrons ?? '?'} total, ${summary?.openclaw?.enabledCrons ?? '?'} enabled
+- Security warnings: ${summary?.openclaw?.securityWarn ?? 0}, critical: ${summary?.openclaw?.securityCritical ?? 0}
+- Cron API degraded: ${summary?.openclaw?.cronDegraded ? 'yes' : 'no'}
+- Dashboard uptime: ${summary?.app?.uptime ?? '?'}
+- OpenClaw version: ${summary?.app?.version ?? '?'}
+
+Answer questions about agents, sessions, crons, alerts, and costs. Be concise.`;
+
+      // Get gateway token
+      let gwToken = '';
+      try {
+        gwToken = (await runCmd(`${OPENCLAW_BIN} config get gateway.auth.token 2>/dev/null`, 10_000)).trim();
+      } catch {}
+
+      if (!gwToken) return json(res, 503, { error: 'gateway token unavailable' });
+
+      const messages = [
+        { role: 'system', content: systemPrompt },
+        ...history.map(m => ({ role: m.role === 'user' ? 'user' : 'assistant', content: String(m.content || '').slice(0, 1000) })),
+        { role: 'user', content: userMessage },
+      ];
+
+      const chatRes = await fetch('http://127.0.0.1:18789/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Authorization': `Bearer ${gwToken}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: 'anthropic/claude-sonnet-4-6', messages, max_tokens: 600 }),
+        signal: AbortSignal.timeout(45_000),
+      });
+      if (!chatRes.ok) {
+        const err = await chatRes.text().catch(() => '');
+        return json(res, 502, { error: `Gateway error ${chatRes.status}: ${err.slice(0, 200)}` });
+      }
+      const chatData = await chatRes.json();
+      const reply = chatData?.choices?.[0]?.message?.content || '';
+      return json(res, 200, { ok: true, reply });
+    }
+
     if (pathname === '/api/skills') {
       const agentId = url.searchParams.get('agentId') || 'all';
       const q = url.searchParams.get('q') || '';
