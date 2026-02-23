@@ -10,6 +10,7 @@ All notable changes to this project are documented in this file.
 - Incident timeline + weekly review backend endpoints
 - RU/EN language switcher and broad UI localization coverage
 - Update check/run controls in top bar
+- Public GitHub release published (`v0.2.0`) + release workflow docs (`RELEASING.md`)
 
 ### Changed
 - Active tasks heuristics improved for Telegram recency handling

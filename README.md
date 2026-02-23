@@ -68,10 +68,12 @@ Open: `http://127.0.0.1:3210`
 
 ## Release policy
 
-This repo uses changelog-first updates.
+This repo uses changelog + release updates.
 
 - Every push must include a `CHANGELOG.md` update.
+- Future updates must also update GitHub Release state (new version tag/release or release notes update).
 - Entries are written in short, user-facing format.
+- Detailed flow: `RELEASING.md`.
 
 ## License
 
