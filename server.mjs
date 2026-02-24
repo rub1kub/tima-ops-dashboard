@@ -149,6 +149,16 @@ function extFromMimeType(mime) {
     'image/webp': '.webp',
     'image/gif': '.gif',
     'image/heic': '.heic',
+    'video/mp4': '.mp4',
+    'video/webm': '.webm',
+    'video/quicktime': '.mov',
+    'audio/mpeg': '.mp3',
+    'audio/mp3': '.mp3',
+    'audio/wav': '.wav',
+    'audio/ogg': '.ogg',
+    'application/pdf': '.pdf',
+    'text/plain': '.txt',
+    'text/markdown': '.md',
   };
   return map[String(mime || '').toLowerCase()] || '.bin';
 }
@@ -166,8 +176,8 @@ function parseDataUrl(dataUrl) {
 
 async function storeChatAttachments(rawItems = []) {
   const items = Array.isArray(rawItems) ? rawItems : [];
-  const limited = items.slice(0, 4);
-  const maxBytesPerFile = 8 * 1024 * 1024;
+  const limited = items.slice(0, 6);
+  const maxBytesPerFile = 20 * 1024 * 1024;
   const out = [];
 
   for (const item of limited) {
@@ -175,10 +185,17 @@ async function storeChatAttachments(rawItems = []) {
     if (!dataUrl) continue;
 
     const { mimeType, buffer } = parseDataUrl(dataUrl);
-    if (!mimeType.startsWith('image/')) throw new Error('Only image attachments are supported');
-    if (buffer.length > maxBytesPerFile) throw new Error('Attachment is too large (max 8MB each)');
+    const isAllowed =
+      mimeType.startsWith('image/') ||
+      mimeType.startsWith('video/') ||
+      mimeType.startsWith('audio/') ||
+      mimeType === 'application/pdf' ||
+      mimeType.startsWith('text/');
 
-    const safeBase = path.basename(String(item?.name || 'image')).replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 64) || 'image';
+    if (!isAllowed) throw new Error('Only media/text attachments are supported');
+    if (buffer.length > maxBytesPerFile) throw new Error('Attachment is too large (max 20MB each)');
+
+    const safeBase = path.basename(String(item?.name || 'file')).replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 64) || 'file';
     const ext = extFromMimeType(mimeType);
     const fileName = `${Date.now()}-${randomUUID().slice(0, 8)}-${safeBase}${safeBase.endsWith(ext) ? '' : ext}`;
     const fullPath = path.join(chatUploadsDir, fileName);
@@ -1962,32 +1979,75 @@ const server = http.createServer(async (req, res) => {
 
     // ── Activity heatmap ────────────────────────────────────────────────────────
     if (pathname === '/api/activity/heatmap') {
-      const status = await openclawStatus();
-      const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
-      // matrix[dayOfWeek 0=Mon..6=Sun][hour 0-23]
+      const now = Date.now();
+      const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
       const matrix = Array.from({ length: 7 }, () => new Array(24).fill(0));
-      const sessions = status?.sessions?.recent || [];
-      for (const s of sessions) {
-        const updMs = s?.updatedAt ? new Date(s.updatedAt).getTime() : 0;
-        if (updMs < sevenDaysAgo || !updMs) continue;
-        const d = new Date(updMs);
-        let dow = d.getDay(); // 0=Sun
-        dow = dow === 0 ? 6 : dow - 1; // convert to Mon=0..Sun=6
-        const hr = d.getHours();
-        if (dow >= 0 && dow < 7 && hr >= 0 && hr < 24) matrix[dow][hr]++;
-      }
-      // Also add cron run data from recent sessions
-      const cronSessions = sessions.filter(s => String(s?.kind || s?.key || '').includes('cron'));
-      for (const s of cronSessions) {
-        const creMs = s?.createdAt ? new Date(s.createdAt).getTime() : 0;
-        if (creMs < sevenDaysAgo || !creMs) continue;
-        const d = new Date(creMs);
+
+      const toMs = (value) => {
+        if (value == null) return 0;
+        if (typeof value === 'number') {
+          if (!Number.isFinite(value) || value <= 0) return 0;
+          // heuristic: seconds vs milliseconds
+          return value < 1_000_000_000_000 ? value * 1000 : value;
+        }
+        const raw = String(value || '').trim();
+        if (!raw) return 0;
+        if (/^\d+$/.test(raw)) {
+          const n = Number(raw);
+          return n < 1_000_000_000_000 ? n * 1000 : n;
+        }
+        const ms = new Date(raw).getTime();
+        return Number.isFinite(ms) ? ms : 0;
+      };
+
+      const addPoint = (tsMs, weight = 1) => {
+        if (!tsMs || tsMs < sevenDaysAgo) return;
+        const d = new Date(tsMs);
         let dow = d.getDay();
         dow = dow === 0 ? 6 : dow - 1;
         const hr = d.getHours();
-        if (dow >= 0 && dow < 7 && hr >= 0 && hr < 24) matrix[dow][hr]++;
+        if (dow >= 0 && dow < 7 && hr >= 0 && hr < 24) matrix[dow][hr] += weight;
+      };
+
+      let sessions = [];
+      try {
+        // more complete than status.recent and updates faster for active chat sessions
+        const out = await runCmd(`${OPENCLAW_BIN} sessions --json 2>/dev/null`, 35_000);
+        const parsed = extractJson(out);
+        sessions = Array.isArray(parsed)
+          ? parsed
+          : Array.isArray(parsed?.sessions)
+            ? parsed.sessions
+            : Array.isArray(parsed?.items)
+              ? parsed.items
+              : [];
+      } catch {
+        const status = await openclawStatus();
+        sessions = status?.sessions?.recent || [];
       }
-      return json(res, 200, { ok: true, matrix, updatedAt: new Date().toISOString() });
+
+      let activeNowBoost = 0;
+      for (const s of sessions) {
+        const updMs = toMs(s?.updatedAt ?? s?.lastMessageAt ?? s?.lastAt ?? s?.ts ?? 0);
+        const creMs = toMs(s?.createdAt ?? s?.startedAt ?? 0);
+
+        addPoint(updMs, 1);
+        if (creMs && creMs !== updMs) addPoint(creMs, 1);
+
+        const ageMs = Number(s?.ageMs ?? s?.idleMs ?? 0);
+        if ((updMs && now - updMs <= 5 * 60 * 1000) || (Number.isFinite(ageMs) && ageMs > 0 && ageMs <= 5 * 60 * 1000)) {
+          activeNowBoost += 1;
+        }
+      }
+
+      if (activeNowBoost > 0) addPoint(now, Math.min(activeNowBoost, 10));
+
+      return json(res, 200, {
+        ok: true,
+        matrix,
+        total: matrix.flat().reduce((a, b) => a + b, 0),
+        updatedAt: new Date().toISOString(),
+      });
     }
 
     // ── AI Chat endpoint ────────────────────────────────────────────────────────
@@ -2005,7 +2065,7 @@ const server = http.createServer(async (req, res) => {
       }
 
       if (!userMessage && chatAttachments.length === 0) {
-        return json(res, 400, { error: lang === 'en' ? 'message or image is required' : 'нужно сообщение или изображение' });
+        return json(res, 400, { error: lang === 'en' ? 'message or attachment is required' : 'нужно сообщение или вложение' });
       }
 
       let summary;
@@ -2014,8 +2074,8 @@ const server = http.createServer(async (req, res) => {
       const langNote = lang === 'en' ? 'Respond in English.' : 'Отвечай на русском языке.';
       const toolPolicy = chatAttachments.length
         ? (lang === 'en'
-          ? 'You may use only image-analysis tools to inspect attached images when needed. Do not execute external actions.'
-          : 'Можно использовать только инструменты анализа изображений для прикреплённых картинок. Внешние действия выполнять нельзя.')
+          ? 'You may inspect attached files. Use image-analysis tools only for image files. Do not execute external actions.'
+          : 'Можно учитывать прикреплённые файлы. Инструменты анализа изображений используй только для картинок. Внешние действия выполнять нельзя.')
         : 'Do not call tools or perform external actions. Return plain text only.';
 
       const systemPrompt = `You are an AI assistant for the Tima Ops Dashboard — a monitoring panel for OpenClaw AI agents. ${langNote}
@@ -2043,15 +2103,15 @@ ${toolPolicy}`;
 
       const attachmentHint = chatAttachments.length
         ? (lang === 'en'
-          ? `Attached images (${chatAttachments.length}):
-${chatAttachments.map((a, i) => `- image ${i + 1}: ${a.path}`).join('\n')}
-Use these files only if the user asks about image content.`
-          : `Прикреплённые изображения (${chatAttachments.length}):
-${chatAttachments.map((a, i) => `- изображение ${i + 1}: ${a.path}`).join('\n')}
-Используй эти файлы, если вопрос связан с содержимым картинки.`)
+          ? `Attached files (${chatAttachments.length}):
+${chatAttachments.map((a, i) => `- file ${i + 1}: ${a.path} (${a.mimeType || 'unknown'})`).join('\n')}
+Use these files only when the user asks about their content.`
+          : `Прикреплённые файлы (${chatAttachments.length}):
+${chatAttachments.map((a, i) => `- файл ${i + 1}: ${a.path} (${a.mimeType || 'unknown'})`).join('\n')}
+Используй эти файлы только когда пользователь просит анализ их содержимого.`)
         : '';
 
-      const userLine = userMessage || (lang === 'en' ? 'Please analyze attached images.' : 'Проанализируй прикреплённые изображения.');
+      const userLine = userMessage || (lang === 'en' ? 'Please analyze attached files.' : 'Проанализируй прикреплённые файлы.');
       const fullPrompt = `${systemPrompt}\n\n${historyText ? historyText + '\n' : ''}${attachmentHint ? attachmentHint + '\n\n' : ''}${lang === 'en' ? 'User' : 'Пользователь'}: ${userLine}\n\n${lang === 'en' ? 'Assistant (answer concisely in 2-4 sentences):' : 'Ассистент (ответь кратко, 2-4 предложения):'}`;
 
       const cmd = `${OPENCLAW_BIN} agent --agent tima --message ${shQuote(fullPrompt)} --json --timeout 60000 2>/dev/null`;

@@ -149,7 +149,7 @@ async function loadHeatmap(silent=false) {
 ══════════════════════════════════════════════════════════════════════ */
 const CHAT_STORAGE_KEY = 'ops.chat.v1';
 const CHAT_PANEL_PREF_KEY = 'ops.chat.panel.v2';
-const CHAT_ATTACH_MAX = 4;
+const CHAT_ATTACH_MAX = 6;
 let chatHistory = [];
 let chatAttachments = [];
 let chatPanelPrefs = { mode: 'float', width: 380, height: 520 };
@@ -182,9 +182,66 @@ function saveChatPanelPrefs() {
 function formatChatBytes(bytes) {
   const n = Number(bytes || 0);
   if (!n) return '0 B';
+  if (n >= 1024 * 1024 * 1024) return `${(n / (1024 * 1024 * 1024)).toFixed(1)} GB`;
   if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
   if (n >= 1024) return `${Math.round(n / 1024)} KB`;
   return `${n} B`;
+}
+
+function chatFileKind(file) {
+  const mime = String(file?.type || '').toLowerCase();
+  if (mime.startsWith('image/')) return 'image';
+  if (mime.startsWith('video/')) return 'video';
+  if (mime.startsWith('audio/')) return 'audio';
+  if (mime === 'application/pdf') return 'pdf';
+  if (mime.startsWith('text/')) return 'text';
+  const name = String(file?.name || '').toLowerCase();
+  if (name.endsWith('.md')) return 'text';
+  if (name.endsWith('.txt')) return 'text';
+  if (name.endsWith('.pdf')) return 'pdf';
+  return 'file';
+}
+
+function chatFileIcon(kind) {
+  if (kind === 'image') return '🖼';
+  if (kind === 'video') return '🎬';
+  if (kind === 'audio') return '🎵';
+  if (kind === 'pdf') return '📄';
+  if (kind === 'text') return '📝';
+  return '📎';
+}
+
+function renderFormattedChatText(text = '') {
+  let safe = esc(String(text || ''));
+
+  // fenced code blocks
+  const blocks = [];
+  safe = safe.replace(/```([\s\S]*?)```/g, (_, code) => {
+    const html = `<pre class="chat-code-block"><code>${code.trim()}</code></pre>`;
+    const idx = blocks.push(html) - 1;
+    return `@@CHATCODE${idx}@@`;
+  });
+
+  // markdown links
+  safe = safe.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
+
+  // inline formatting
+  safe = safe.replace(/`([^`]+)`/g, '<code class="chat-inline-code">$1</code>');
+  safe = safe.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+  safe = safe.replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
+  safe = safe.replace(/__([^_\n]+)__/g, '<u>$1</u>');
+  safe = safe.replace(/~~([^~\n]+)~~/g, '<s>$1</s>');
+
+  // block quotes (> text)
+  safe = safe.replace(/^&gt;\s?(.*)$/gm, '<span class="chat-quote">$1</span>');
+
+  // auto-links for plain URLs (after markdown links)
+  safe = safe.replace(/(^|\s)(https?:\/\/[^\s<]+)/g, '$1<a href="$2" target="_blank" rel="noopener noreferrer">$2</a>');
+
+  safe = safe.replace(/\n/g, '<br>');
+  safe = safe.replace(/@@CHATCODE(\d+)@@/g, (_, idx) => blocks[Number(idx)] || '');
+
+  return safe;
 }
 
 function applyChatPanelPrefs(panel) {
@@ -228,9 +285,10 @@ function captureChatPanelSize(panel) {
 
 function renderAttachmentBadges(items = []) {
   if (!items.length) return '';
-  return `<div class="chat-bubble-attachments">${items.map(a =>
-    `<span class="chat-attach-badge">🖼 ${esc(a.name || 'image')}</span>`
-  ).join('')}</div>`;
+  return `<div class="chat-bubble-attachments">${items.map(a => {
+    const kind = a.kind || chatFileKind(a);
+    return `<span class="chat-attach-badge">${chatFileIcon(kind)} ${esc(a.name || 'file')}</span>`;
+  }).join('')}</div>`;
 }
 
 function appendChatBubble(role, content, loading=false, attachments=[]) {
@@ -243,7 +301,7 @@ function appendChatBubble(role, content, loading=false, attachments=[]) {
   const id = loading ? 'chat-typing-indicator' : '';
   const inner = loading
     ? `<span class="chat-typing-dots">···</span>`
-    : `<span style="white-space:pre-wrap;word-break:break-word">${esc(content || '')}</span>${renderAttachmentBadges(attachments)}`;
+    : `<div class="chat-bubble-text">${renderFormattedChatText(content || '')}</div>${renderAttachmentBadges(attachments)}`;
   const el = document.createElement('div');
   el.style.cssText = `display:flex;justify-content:${align};${id ? '' : ''}`;
   if (id) el.id = id;
@@ -264,22 +322,36 @@ function readFileAsDataUrl(file) {
 
 async function addChatAttachments(fileList) {
   const files = Array.from(fileList || []);
+  const maxBytes = 20 * 1024 * 1024;
+
   for (const file of files) {
     if (chatAttachments.length >= CHAT_ATTACH_MAX) {
-      toast(L === 'en' ? `Max ${CHAT_ATTACH_MAX} images` : `Максимум ${CHAT_ATTACH_MAX} изображений`, 'warn');
+      toast(L === 'en' ? `Max ${CHAT_ATTACH_MAX} files` : `Максимум ${CHAT_ATTACH_MAX} файлов`, 'warn');
       break;
     }
-    if (!String(file.type || '').startsWith('image/')) {
-      toast(L === 'en' ? 'Only images are supported' : 'Поддерживаются только изображения', 'warn');
+
+    const kind = chatFileKind(file);
+    const allowed = ['image', 'video', 'audio', 'pdf', 'text', 'file'];
+    if (!allowed.includes(kind)) {
+      toast(L === 'en' ? `${file.name}: file type is not supported` : `${file.name}: тип файла не поддерживается`, 'warn');
       continue;
     }
-    if (file.size > 8 * 1024 * 1024) {
-      toast(L === 'en' ? `${file.name}: too large (8MB max)` : `${file.name}: слишком большой файл (макс 8MB)`, 'warn');
+
+    if (file.size > maxBytes) {
+      toast(L === 'en' ? `${file.name}: too large (20MB max)` : `${file.name}: слишком большой файл (макс 20MB)`, 'warn');
       continue;
     }
+
     const dataUrl = await readFileAsDataUrl(file);
-    chatAttachments.push({ name: file.name, mimeType: file.type, sizeBytes: file.size, dataUrl });
+    chatAttachments.push({
+      name: file.name,
+      mimeType: file.type || 'application/octet-stream',
+      sizeBytes: file.size,
+      kind,
+      dataUrl,
+    });
   }
+
   renderChatAttachments();
 }
 
@@ -292,9 +364,10 @@ function renderChatAttachments() {
     return;
   }
   box.classList.remove('hidden');
-  box.innerHTML = chatAttachments.map((a, idx) =>
-    `<button class="chat-attach-chip" data-chat-remove="${idx}" title="${esc(a.name)}">🖼 ${esc(a.name)} · ${formatChatBytes(a.sizeBytes)} ✕</button>`
-  ).join('');
+  box.innerHTML = chatAttachments.map((a, idx) => {
+    const kind = a.kind || chatFileKind(a);
+    return `<button class="chat-attach-chip" data-chat-remove="${idx}" title="${esc(a.name)}">${chatFileIcon(kind)} ${esc(a.name)} · ${formatChatBytes(a.sizeBytes)} ✕</button>`;
+  }).join('');
 }
 
 async function sendChatMessage() {
@@ -315,8 +388,8 @@ async function sendChatMessage() {
   if (sendBtn) sendBtn.disabled = true;
   if (attachBtn) attachBtn.disabled = true;
 
-  appendChatBubble('user', msg || (L === 'en' ? '[image attached]' : '[прикреплено изображение]'), false, outgoingAttachments);
-  chatHistory.push({ role: 'user', content: msg || (L === 'en' ? `[${outgoingAttachments.length} image]` : `[${outgoingAttachments.length} изображение]`) });
+  appendChatBubble('user', msg || (L === 'en' ? '[file attached]' : '[прикреплён файл]'), false, outgoingAttachments);
+  chatHistory.push({ role: 'user', content: msg || (L === 'en' ? `[${outgoingAttachments.length} file]` : `[${outgoingAttachments.length} файл]`) });
 
   const typingEl = appendChatBubble('assistant', '', true);
   try {
@@ -345,7 +418,7 @@ async function sendChatMessage() {
     appendChatBubble('assistant', reply);
   } catch (err) {
     if (typingEl) typingEl.remove();
-    appendChatBubble('assistant', `${t('chatError')}: ${esc(err.message || 'unknown')}`);
+    appendChatBubble('assistant', `${t('chatError')}: ${String(err.message || 'unknown')}`);
   } finally {
     input.disabled = false;
     if (sendBtn) sendBtn.disabled = false;
@@ -368,6 +441,7 @@ function initChatWidget() {
   const dockFloatBtn = $('#chatDockFloat');
   const attachBtn = $('#chatAttachBtn');
   const fileInput = $('#chatFileInput');
+  const dropHint = $('#chatDropHint');
 
   if (!toggle || !panel) return;
 
@@ -376,12 +450,12 @@ function initChatWidget() {
   const inputEl = $('#chatInput');
   if (titleEl) titleEl.textContent = t('chatTitle');
   if (inputEl) inputEl.placeholder = t('chatPlaceholder');
-  if (sendBtn) sendBtn.textContent = t('chatSend');
 
   dockLeftBtn?.setAttribute('title', L === 'en' ? 'Dock left' : 'Закрепить слева');
   dockRightBtn?.setAttribute('title', L === 'en' ? 'Dock right' : 'Закрепить справа');
   dockFloatBtn?.setAttribute('title', L === 'en' ? 'Floating mode' : 'Плавающий режим');
-  attachBtn?.setAttribute('title', L === 'en' ? 'Attach image' : 'Прикрепить изображение');
+  attachBtn?.setAttribute('title', L === 'en' ? 'Attach file/media' : 'Прикрепить файл/медиа');
+  if (dropHint) dropHint.textContent = L === 'en' ? 'Drop files here or use the paperclip button' : 'Перетащи файлы сюда или нажми кнопку скрепки';
 
   applyChatPanelPrefs(panel);
   window.addEventListener('resize', () => applyChatPanelPrefs(panel));
@@ -428,6 +502,49 @@ function initChatWidget() {
     if (files?.length) await addChatAttachments(files);
     if (fileInput) fileInput.value = '';
   });
+
+  // Drag & drop attachments on chat panel/messages
+  let dragCounter = 0;
+  const showDropState = (on) => {
+    if (dropHint) dropHint.classList.toggle('hidden', !on);
+    panel.classList.toggle('chat-drop-active', !!on);
+  };
+
+  const isFileDrag = (e) => {
+    const types = e?.dataTransfer?.types;
+    return Array.isArray(types) ? types.includes('Files') : (types && [...types].includes('Files'));
+  };
+
+  const onDragEnter = (e) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    dragCounter += 1;
+    showDropState(true);
+  };
+  const onDragOver = (e) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  };
+  const onDragLeave = (e) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    dragCounter = Math.max(0, dragCounter - 1);
+    if (!dragCounter) showDropState(false);
+  };
+  const onDrop = async (e) => {
+    if (!isFileDrag(e)) return;
+    e.preventDefault();
+    dragCounter = 0;
+    showDropState(false);
+    const files = e?.dataTransfer?.files;
+    if (files?.length) await addChatAttachments(files);
+  };
+
+  panel.addEventListener('dragenter', onDragEnter);
+  panel.addEventListener('dragover', onDragOver);
+  panel.addEventListener('dragleave', onDragLeave);
+  panel.addEventListener('drop', onDrop);
 
   $('#chatAttachments')?.addEventListener('click', (e) => {
     const btn = e.target.closest('[data-chat-remove]');
@@ -509,7 +626,7 @@ const i18n = {
     noHistory:'История пуста', showMore:'Показать ещё', showLess:'Свернуть',
     heatmapTitle:'Активность по часам', heatmapSub:'сессии и cron за 7 дней',
     heatmapLess:'меньше', heatmapMore:'больше',
-    chatTitle:'💬 AI Chat', chatPlaceholder:'Спроси про агентов, cron, бюджет…',
+    chatTitle:'AI чат', chatPlaceholder:'Спроси про агентов, cron, бюджет…',
     chatSend:'→', chatWelcome:'Привет! Спроси что-нибудь про систему.',
     chatError:'Ошибка подключения к AI',
     cronCostBadge:'7д: токены',
@@ -555,7 +672,7 @@ const i18n = {
     noHistory:'No history yet', showMore:'Show more', showLess:'Show less',
     heatmapTitle:'Activity heatmap', heatmapSub:'sessions & crons last 7 days',
     heatmapLess:'less', heatmapMore:'more',
-    chatTitle:'💬 AI Chat', chatPlaceholder:'Ask about agents, crons, budget…',
+    chatTitle:'AI Chat', chatPlaceholder:'Ask about agents, crons, budget…',
     chatSend:'→', chatWelcome:'Hi! Ask me anything about your system.',
     chatError:'Failed to connect to AI',
     cronCostBadge:'7d: tokens',
