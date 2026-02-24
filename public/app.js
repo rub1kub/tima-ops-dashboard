@@ -71,18 +71,28 @@ async function loadHeatmap(silent=false) {
 
     const maxVal = Math.max(1, ...matrix.flat());
     const days = L === 'en' ? DAY_LABELS_EN : DAY_LABELS_RU;
-    let html = `<div style="display:inline-block;font-size:11px">`;
+
+    // Make heatmap responsive so it does not become too wide on smaller screens
+    const dayLabelW = 24;
+    const containerW = Math.max(260, grid.clientWidth || card.clientWidth || 360);
+    const cell = Math.max(9, Math.min(13, Math.floor((containerW - dayLabelW - 8) / 24) - 2));
+    const cellOuter = cell + 2; // + margins
+    const hourStep = cell <= 10 ? 8 : 6;
+    const legendCell = Math.max(9, cell - 2);
+
+    const gridWidth = dayLabelW + (24 * cellOuter) + 8;
+    let html = `<div style="display:flex;justify-content:center;width:100%"><div style="font-size:11px;width:min(100%,${gridWidth}px)">`;
     // Hour labels
-    html += `<div style="display:flex;padding-left:28px;gap:0;margin-bottom:2px">`;
+    html += `<div style="display:flex;padding-left:${dayLabelW + 2}px;gap:0;margin-bottom:2px">`;
     for (let h = 0; h < 24; h++) {
-      const show = h % 6 === 0;
-      html += `<div style="width:15px;text-align:center;color:var(--muted);font-size:10px">${show ? h : ''}</div>`;
+      const show = h % hourStep === 0;
+      html += `<div style="width:${cellOuter}px;text-align:center;color:var(--muted);font-size:10px">${show ? h : ''}</div>`;
     }
     html += `</div>`;
     // Grid rows
     for (let d2 = 0; d2 < 7; d2++) {
       html += `<div style="display:flex;align-items:center;gap:0;margin-bottom:2px">`;
-      html += `<div style="width:26px;font-size:10px;color:var(--muted);text-align:right;padding-right:4px;flex-shrink:0">${days[d2]}</div>`;
+      html += `<div style="width:${dayLabelW}px;font-size:10px;color:var(--muted);text-align:right;padding-right:4px;flex-shrink:0">${days[d2]}</div>`;
       for (let h = 0; h < 24; h++) {
         const val = matrix[d2][h];
         const pct = val / maxVal;
@@ -92,20 +102,20 @@ async function loadHeatmap(silent=false) {
         else if (pct < 0.6) bg = 'rgba(99,102,241,0.55)';
         else bg = 'rgba(99,102,241,1)';
         const dayStr = L === 'en' ? DAY_LABELS_EN[d2] : DAY_LABELS_RU[d2];
-        html += `<div style="width:13px;height:13px;background:${bg};border-radius:2px;margin:1px;flex-shrink:0;cursor:default" title="${dayStr} ${h}:00 — ${val}"></div>`;
+        html += `<div style="width:${cell}px;height:${cell}px;background:${bg};border-radius:2px;margin:1px;flex-shrink:0;cursor:default" title="${dayStr} ${h}:00 — ${val}"></div>`;
       }
       html += `</div>`;
     }
     // Legend
-    html += `<div style="display:flex;align-items:center;gap:4px;margin-top:6px;padding-left:28px">
+    html += `<div style="display:flex;align-items:center;gap:4px;margin-top:6px;padding-left:${dayLabelW + 2}px">
       <span style="font-size:10px;color:var(--muted)">${t('heatmapLess')}</span>
       ${[0,0.15,0.4,0.7,1].map(p=>{
         const bg = p===0?'var(--border)':p<0.25?'rgba(99,102,241,0.2)':p<0.6?'rgba(99,102,241,0.55)':'rgba(99,102,241,1)';
-        return `<div style="width:11px;height:11px;background:${bg};border-radius:2px"></div>`;
+        return `<div style="width:${legendCell}px;height:${legendCell}px;background:${bg};border-radius:2px"></div>`;
       }).join('')}
       <span style="font-size:10px;color:var(--muted)">${t('heatmapMore')}</span>
     </div>`;
-    html += `</div>`;
+    html += `</div></div>`;
     grid.innerHTML = html;
   } catch {
     if (!silent && card) card.style.display = 'none';
@@ -116,7 +126,11 @@ async function loadHeatmap(silent=false) {
    AI CHAT WIDGET
 ══════════════════════════════════════════════════════════════════════ */
 const CHAT_STORAGE_KEY = 'ops.chat.v1';
+const CHAT_PANEL_PREF_KEY = 'ops.chat.panel.v2';
+const CHAT_ATTACH_MAX = 4;
 let chatHistory = [];
+let chatAttachments = [];
+let chatPanelPrefs = { mode: 'float', width: 380, height: 520 };
 
 function loadChatHistory() {
   try { chatHistory = JSON.parse(sessionStorage.getItem(CHAT_STORAGE_KEY) || '[]'); } catch { chatHistory = []; }
@@ -126,7 +140,78 @@ function saveChatHistory() {
   try { sessionStorage.setItem(CHAT_STORAGE_KEY, JSON.stringify(chatHistory.slice(-20))); } catch {}
 }
 
-function appendChatBubble(role, content, loading=false) {
+function loadChatPanelPrefs() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(CHAT_PANEL_PREF_KEY) || '{}');
+    if (raw && typeof raw === 'object') {
+      chatPanelPrefs = {
+        mode: ['left', 'right', 'float'].includes(raw.mode) ? raw.mode : 'float',
+        width: Number(raw.width) || 380,
+        height: Number(raw.height) || 520,
+      };
+    }
+  } catch {}
+}
+
+function saveChatPanelPrefs() {
+  try { localStorage.setItem(CHAT_PANEL_PREF_KEY, JSON.stringify(chatPanelPrefs)); } catch {}
+}
+
+function formatChatBytes(bytes) {
+  const n = Number(bytes || 0);
+  if (!n) return '0 B';
+  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MB`;
+  if (n >= 1024) return `${Math.round(n / 1024)} KB`;
+  return `${n} B`;
+}
+
+function applyChatPanelPrefs(panel) {
+  if (!panel) return;
+  const isMobile = window.innerWidth <= 700;
+  panel.classList.remove('chat-panel-dock-left', 'chat-panel-dock-right', 'chat-panel-float');
+
+  if (isMobile) {
+    panel.classList.add('chat-panel-float');
+    panel.style.width = '';
+    panel.style.height = '';
+    return;
+  }
+
+  const width = Math.max(320, Math.min(860, Number(chatPanelPrefs.width) || 380));
+  const height = Math.max(300, Math.min(980, Number(chatPanelPrefs.height) || 520));
+
+  if (chatPanelPrefs.mode === 'left') {
+    panel.classList.add('chat-panel-dock-left');
+    panel.style.width = `${width}px`;
+    panel.style.height = '';
+  } else if (chatPanelPrefs.mode === 'right') {
+    panel.classList.add('chat-panel-dock-right');
+    panel.style.width = `${width}px`;
+    panel.style.height = '';
+  } else {
+    panel.classList.add('chat-panel-float');
+    panel.style.width = `${width}px`;
+    panel.style.height = `${height}px`;
+  }
+}
+
+function captureChatPanelSize(panel) {
+  if (!panel || panel.classList.contains('hidden')) return;
+  const rect = panel.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
+  chatPanelPrefs.width = Math.round(rect.width);
+  if (chatPanelPrefs.mode === 'float') chatPanelPrefs.height = Math.round(rect.height);
+  saveChatPanelPrefs();
+}
+
+function renderAttachmentBadges(items = []) {
+  if (!items.length) return '';
+  return `<div class="chat-bubble-attachments">${items.map(a =>
+    `<span class="chat-attach-badge">🖼 ${esc(a.name || 'image')}</span>`
+  ).join('')}</div>`;
+}
+
+function appendChatBubble(role, content, loading=false, attachments=[]) {
   const box = $('#chatMessages');
   if (!box) return;
   const isUser = role === 'user';
@@ -136,34 +221,98 @@ function appendChatBubble(role, content, loading=false) {
   const id = loading ? 'chat-typing-indicator' : '';
   const inner = loading
     ? `<span class="chat-typing-dots">···</span>`
-    : `<span style="white-space:pre-wrap;word-break:break-word">${esc(content)}</span>`;
+    : `<span style="white-space:pre-wrap;word-break:break-word">${esc(content || '')}</span>${renderAttachmentBadges(attachments)}`;
   const el = document.createElement('div');
-  el.style.cssText = `display:flex;justify-content:${align};${id?'':''}`;
+  el.style.cssText = `display:flex;justify-content:${align};${id ? '' : ''}`;
   if (id) el.id = id;
-  el.innerHTML = `<div style="max-width:85%;background:${bg};color:${color};border:1px solid var(--border);border-radius:10px;padding:8px 12px;font-size:13px">${inner}</div>`;
+  el.innerHTML = `<div style="max-width:88%;background:${bg};color:${color};border:1px solid var(--border);border-radius:10px;padding:8px 12px;font-size:13px">${inner}</div>`;
   box.appendChild(el);
   box.scrollTop = box.scrollHeight;
   return el;
 }
 
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(new Error('Failed to read file'));
+    reader.readAsDataURL(file);
+  });
+}
+
+async function addChatAttachments(fileList) {
+  const files = Array.from(fileList || []);
+  for (const file of files) {
+    if (chatAttachments.length >= CHAT_ATTACH_MAX) {
+      toast(L === 'en' ? `Max ${CHAT_ATTACH_MAX} images` : `Максимум ${CHAT_ATTACH_MAX} изображений`, 'warn');
+      break;
+    }
+    if (!String(file.type || '').startsWith('image/')) {
+      toast(L === 'en' ? 'Only images are supported' : 'Поддерживаются только изображения', 'warn');
+      continue;
+    }
+    if (file.size > 8 * 1024 * 1024) {
+      toast(L === 'en' ? `${file.name}: too large (8MB max)` : `${file.name}: слишком большой файл (макс 8MB)`, 'warn');
+      continue;
+    }
+    const dataUrl = await readFileAsDataUrl(file);
+    chatAttachments.push({ name: file.name, mimeType: file.type, sizeBytes: file.size, dataUrl });
+  }
+  renderChatAttachments();
+}
+
+function renderChatAttachments() {
+  const box = $('#chatAttachments');
+  if (!box) return;
+  if (!chatAttachments.length) {
+    box.classList.add('hidden');
+    box.innerHTML = '';
+    return;
+  }
+  box.classList.remove('hidden');
+  box.innerHTML = chatAttachments.map((a, idx) =>
+    `<button class="chat-attach-chip" data-chat-remove="${idx}" title="${esc(a.name)}">🖼 ${esc(a.name)} · ${formatChatBytes(a.sizeBytes)} ✕</button>`
+  ).join('');
+}
+
 async function sendChatMessage() {
   const input = $('#chatInput');
+  const sendBtn = $('#chatSend');
+  const attachBtn = $('#chatAttachBtn');
   if (!input) return;
-  const msg = input.value.trim();
-  if (!msg) return;
-  input.value = '';
-  input.disabled = true;
 
-  appendChatBubble('user', msg);
-  chatHistory.push({ role: 'user', content: msg });
+  const msg = input.value.trim();
+  const outgoingAttachments = chatAttachments.slice();
+  if (!msg && !outgoingAttachments.length) return;
+
+  input.value = '';
+  chatAttachments = [];
+  renderChatAttachments();
+
+  input.disabled = true;
+  if (sendBtn) sendBtn.disabled = true;
+  if (attachBtn) attachBtn.disabled = true;
+
+  appendChatBubble('user', msg || (L === 'en' ? '[image attached]' : '[прикреплено изображение]'), false, outgoingAttachments);
+  chatHistory.push({ role: 'user', content: msg || (L === 'en' ? `[${outgoingAttachments.length} image]` : `[${outgoingAttachments.length} изображение]`) });
 
   const typingEl = appendChatBubble('assistant', '', true);
   try {
     const res = await fetch('./api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ message: msg, history: chatHistory.slice(-6), lang: L }),
-      signal: AbortSignal.timeout(50_000),
+      body: JSON.stringify({
+        message: msg,
+        history: chatHistory.slice(-6),
+        lang: L,
+        attachments: outgoingAttachments.map(a => ({
+          name: a.name,
+          mimeType: a.mimeType,
+          sizeBytes: a.sizeBytes,
+          dataUrl: a.dataUrl,
+        })),
+      }),
+      signal: AbortSignal.timeout(80_000),
     });
     const data = await res.json().catch(() => ({}));
     if (typingEl) typingEl.remove();
@@ -174,20 +323,30 @@ async function sendChatMessage() {
     appendChatBubble('assistant', reply);
   } catch (err) {
     if (typingEl) typingEl.remove();
-    appendChatBubble('assistant', `${t('chatError')}: ${esc(err.message)}`);
+    appendChatBubble('assistant', `${t('chatError')}: ${esc(err.message || 'unknown')}`);
   } finally {
     input.disabled = false;
+    if (sendBtn) sendBtn.disabled = false;
+    if (attachBtn) attachBtn.disabled = false;
     input.focus();
   }
 }
 
 function initChatWidget() {
   loadChatHistory();
+  loadChatPanelPrefs();
+
   const toggle = $('#chatToggle');
   const panel = $('#chatPanel');
   const closeBtn = $('#chatClose');
   const sendBtn = $('#chatSend');
   const input = $('#chatInput');
+  const dockLeftBtn = $('#chatDockLeft');
+  const dockRightBtn = $('#chatDockRight');
+  const dockFloatBtn = $('#chatDockFloat');
+  const attachBtn = $('#chatAttachBtn');
+  const fileInput = $('#chatFileInput');
+
   if (!toggle || !panel) return;
 
   // Update i18n labels
@@ -197,13 +356,22 @@ function initChatWidget() {
   if (inputEl) inputEl.placeholder = t('chatPlaceholder');
   if (sendBtn) sendBtn.textContent = t('chatSend');
 
+  dockLeftBtn?.setAttribute('title', L === 'en' ? 'Dock left' : 'Закрепить слева');
+  dockRightBtn?.setAttribute('title', L === 'en' ? 'Dock right' : 'Закрепить справа');
+  dockFloatBtn?.setAttribute('title', L === 'en' ? 'Floating mode' : 'Плавающий режим');
+  attachBtn?.setAttribute('title', L === 'en' ? 'Attach image' : 'Прикрепить изображение');
+
+  applyChatPanelPrefs(panel);
+  window.addEventListener('resize', () => applyChatPanelPrefs(panel));
+  window.addEventListener('mouseup', () => captureChatPanelSize(panel));
+
   toggle.addEventListener('click', () => {
     const isHidden = panel.classList.contains('hidden');
     panel.classList.toggle('hidden', !isHidden);
     if (isHidden) {
+      applyChatPanelPrefs(panel);
       const box = $('#chatMessages');
       if (box && !box.children.length) {
-        // Render history
         if (chatHistory.length) {
           chatHistory.forEach(m => appendChatBubble(m.role, m.content));
         } else {
@@ -215,6 +383,38 @@ function initChatWidget() {
   });
 
   closeBtn?.addEventListener('click', () => panel.classList.add('hidden'));
+
+  dockLeftBtn?.addEventListener('click', () => {
+    chatPanelPrefs.mode = 'left';
+    applyChatPanelPrefs(panel);
+    saveChatPanelPrefs();
+  });
+  dockRightBtn?.addEventListener('click', () => {
+    chatPanelPrefs.mode = 'right';
+    applyChatPanelPrefs(panel);
+    saveChatPanelPrefs();
+  });
+  dockFloatBtn?.addEventListener('click', () => {
+    chatPanelPrefs.mode = 'float';
+    applyChatPanelPrefs(panel);
+    saveChatPanelPrefs();
+  });
+
+  attachBtn?.addEventListener('click', () => fileInput?.click());
+  fileInput?.addEventListener('change', async (e) => {
+    const files = e.target?.files;
+    if (files?.length) await addChatAttachments(files);
+    if (fileInput) fileInput.value = '';
+  });
+
+  $('#chatAttachments')?.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-chat-remove]');
+    if (!btn) return;
+    const idx = Number(btn.dataset.chatRemove);
+    if (!Number.isFinite(idx) || idx < 0 || idx >= chatAttachments.length) return;
+    chatAttachments.splice(idx, 1);
+    renderChatAttachments();
+  });
 
   sendBtn?.addEventListener('click', sendChatMessage);
   input?.addEventListener('keydown', e => {
@@ -290,7 +490,7 @@ const i18n = {
     chatTitle:'💬 AI Chat', chatPlaceholder:'Спроси про агентов, cron, бюджет…',
     chatSend:'→', chatWelcome:'Привет! Спроси что-нибудь про систему.',
     chatError:'Ошибка подключения к AI',
-    cronCostBadge:'7д: ~$',
+    cronCostBadge:'7д: токены',
   },
   en: {
     overview:'Overview', crons:'Schedule', sessions:'Sessions', files:'Files', skills:'Skills',
@@ -336,7 +536,7 @@ const i18n = {
     chatTitle:'💬 AI Chat', chatPlaceholder:'Ask about agents, crons, budget…',
     chatSend:'→', chatWelcome:'Hi! Ask me anything about your system.',
     chatError:'Failed to connect to AI',
-    cronCostBadge:'7d: ~$',
+    cronCostBadge:'7d: tokens',
   }
 };
 
@@ -909,33 +1109,59 @@ async function loadIncidentCenter(silent=false) {
   if (!silent && !S.loaded['#incidentList']) withSkel('#incidentList', skelRow(3,'34px'));
   try {
     const ai = await api('ai/fix/list', 12000).catch(() => ({ items: [] }));
-    const aiItems = (ai.items || []).slice(0, 8);
-    const alertItems = (S.alerts || []).slice(0, 6).map(a => ({
-      kind: 'alert',
-      ts: Date.now(),
-      title: ruText(a.title),
-      details: ruText(a.details),
-      status: a.severity === 'critical' ? 'risk' : a.severity === 'warning' ? 'warn' : 'info'
-    }));
-
-    const opItems = aiItems.map(op => ({
+    const aiItems = (ai.items || []).slice(0, 8).map(op => ({
       kind: 'ai-op',
-      ts: op.updatedAtMs || op.createdAtMs,
-      title: `${L==='en'?'AI-fix':'ИИ-фикс'}: ${op.title}`,
-      details: op.status === 'running' ? (L==='en'?'running…':'выполняется…') : op.status === 'done' ? (L==='en'?'done':'выполнено') : `${L==='en'?'error':'ошибка'}: ${op.error || 'unknown'}`,
-      status: op.status === 'running' ? 'info' : op.status === 'done' ? 'ok' : 'warn'
+      ts: op.updatedAtMs || op.createdAtMs || Date.now(),
+      source: L === 'en' ? 'AI-fix' : 'ИИ-фикс',
+      title: op.title || (L === 'en' ? 'AI operation' : 'ИИ-операция'),
+      details: op.status === 'running'
+        ? (L === 'en' ? 'running…' : 'выполняется…')
+        : op.status === 'done'
+          ? (L === 'en' ? 'completed' : 'выполнено')
+          : `${L === 'en' ? 'error' : 'ошибка'}: ${op.error || (L === 'en' ? 'unknown' : 'неизвестно')}`,
+      status: op.status === 'running' ? 'info' : op.status === 'done' ? 'ok' : 'warn',
     }));
 
-    const merged = [...opItems, ...alertItems]
-      .sort((a,b)=>(b.ts||0)-(a.ts||0))
+    const now = Date.now();
+    const alertItems = (S.alerts || []).slice(0, 6).map((a, idx) => ({
+      kind: 'alert',
+      ts: now - idx * 1000,
+      source: L === 'en' ? 'Alert' : 'Алерт',
+      title: ruText(a.title),
+      details: ruText(a.details || a.impact || ''),
+      status: a.severity === 'critical' ? 'risk' : a.severity === 'warning' ? 'warn' : a.severity === 'ok' ? 'ok' : 'info',
+    }));
+
+    const merged = [...aiItems, ...alertItems]
+      .sort((a, b) => (b.ts || 0) - (a.ts || 0))
       .slice(0, 10);
 
+    const statusLabel = (status) => {
+      if (L === 'en') {
+        if (status === 'ok') return 'ok';
+        if (status === 'warn') return 'warning';
+        if (status === 'risk') return 'critical';
+        return 'info';
+      }
+      if (status === 'ok') return 'ок';
+      if (status === 'warn') return 'предупреждение';
+      if (status === 'risk') return 'критично';
+      return 'инфо';
+    };
+
     box.innerHTML = merged.map(x => {
-      const color = x.status === 'ok' ? 'var(--green)' : x.status === 'warn' ? 'var(--amber)' : x.status === 'risk' ? 'var(--red)' : 'var(--blue)';
-      return `<div style="padding:8px;border:1px solid var(--border);border-radius:8px;margin-bottom:8px;background:var(--surface)"><div style="display:flex;justify-content:space-between;gap:8px"><div style="font-size:13px;font-weight:600">${esc(x.title)}</div><span style="font-size:10px;color:${color}">●</span></div><div style="font-size:12px;color:var(--muted);margin-top:2px">${esc(x.details || '')}</div></div>`;
-    }).join('') || '<div style="font-size:12px;color:var(--muted)">Инцидентов нет</div>';
+      const color = x.status === 'ok'
+        ? 'var(--green)'
+        : x.status === 'warn'
+          ? 'var(--amber)'
+          : x.status === 'risk'
+            ? 'var(--red)'
+            : 'var(--blue)';
+      const tm = x.ts ? new Date(x.ts).toLocaleTimeString() : '';
+      return `<div style="padding:9px;border:1px solid var(--border);border-left:3px solid ${color};border-radius:8px;margin-bottom:8px;background:var(--surface)"><div style="display:flex;justify-content:space-between;gap:8px;align-items:flex-start"><div style="min-width:0"><div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap"><span class="pill" style="background:var(--bg);color:var(--muted);border:1px solid var(--border)">${esc(x.source || '')}</span><span class="pill" style="background:${color};color:#fff">${esc(statusLabel(x.status))}</span></div><div style="font-size:13px;font-weight:600;margin-top:4px;word-break:break-word">${esc(x.title || '')}</div></div>${tm ? `<span style="font-size:10px;color:var(--muted);flex-shrink:0">${esc(tm)}</span>` : ''}</div><div style="font-size:12px;color:var(--muted);margin-top:4px;word-break:break-word">${esc(x.details || '')}</div></div>`;
+    }).join('') || `<div class="incident-empty">${L==='en'?'No active incidents':'Нет активных инцидентов'}<div class="incident-empty-sub">${L==='en'?'Everything looks stable right now.':'Сейчас всё стабильно — наблюдаем дальше.'}</div></div>`;
   } catch (err) {
-    box.innerHTML = `<div style="font-size:12px;color:var(--red)">L==='en'?'Incident center error':'Ошибка инцидент-центра': ${esc(err.message)}</div>`;
+    box.innerHTML = `<div style="font-size:12px;color:var(--red)">${L==='en'?'Incident center error':'Ошибка инцидент-центра'}: ${esc(err.message)}</div>`;
   }
 }
 
@@ -1093,14 +1319,19 @@ async function loadWeeklyReview(silent=false) {
     const triage = d.triage || {};
     const total = d.eventsTotal || 0;
     const errCount = (d.byLevel || {}).error || 0;
+
+    const labels = L === 'en'
+      ? { events: 'Events (7d)', errors: 'Errors', new: 'New', resolved: 'Resolved', solving: 'Solving', ignored: 'Ignored' }
+      : { events: 'События (7д)', errors: 'Ошибки', new: 'Новые', resolved: 'Решено', solving: 'В работе', ignored: 'Игнор' };
+
     box.innerHTML = `
-      <div style="display:grid;grid-template-columns:1fr 1fr;gap:6px;font-size:11px">
-        <div style="background:var(--bg);border-radius:6px;padding:6px">📊 Events (7d)<br><b style="font-size:16px">${total}</b></div>
-        <div style="background:var(--bg);border-radius:6px;padding:6px;color:${errCount>0?'var(--red)':'var(--green)'}">❌ Errors<br><b style="font-size:16px">${errCount}</b></div>
-        <div style="background:var(--bg);border-radius:6px;padding:6px">🆕 New<br><b>${triage.new||0}</b></div>
-        <div style="background:var(--bg);border-radius:6px;padding:6px;color:var(--green)">✅ Resolved<br><b>${triage.resolved||0}</b></div>
-        <div style="background:var(--bg);border-radius:6px;padding:6px;color:var(--amber)">🔍 Solving<br><b>${triage.investigating||0}</b></div>
-        <div style="background:var(--bg);border-radius:6px;padding:6px;color:var(--muted)">🙈 Ignored<br><b>${triage.ignored||0}</b></div>
+      <div class="weekly-review-grid">
+        <div class="weekly-review-item"><div class="k">📊 ${labels.events}</div><div class="v">${total}</div></div>
+        <div class="weekly-review-item ${errCount > 0 ? 'tone-red' : 'tone-green'}"><div class="k">❌ ${labels.errors}</div><div class="v">${errCount}</div></div>
+        <div class="weekly-review-item"><div class="k">🆕 ${labels.new}</div><div class="v">${triage.new || 0}</div></div>
+        <div class="weekly-review-item tone-green"><div class="k">✅ ${labels.resolved}</div><div class="v">${triage.resolved || 0}</div></div>
+        <div class="weekly-review-item tone-amber"><div class="k">🔍 ${labels.solving}</div><div class="v">${triage.investigating || 0}</div></div>
+        <div class="weekly-review-item"><div class="k">🙈 ${labels.ignored}</div><div class="v">${triage.ignored || 0}</div></div>
       </div>`;
     S.loaded['#weeklyReviewBox'] = true;
   } catch (err) {
@@ -1571,14 +1802,22 @@ async function loadCronCosts(jobs) {
       const d = await api(`cron/cost?id=${encodeURIComponent(j.id)}`);
       const el = $(`#cron-cost-${j.id.replace(/[^a-zA-Z0-9-]/g, '-')}`);
       if (!el) return;
-      if (d.runs7d === 0 && d.costUsd === 0) {
+
+      const runs = Number(d.runs7d || 0);
+      const totalTokens = Number(d.totalTokens || ((Number(d.inputTokens || 0) + Number(d.outputTokens || 0))));
+      if (!runs || !totalTokens) {
         el.textContent = '7d: --';
-      } else {
-        const cost = d.costUsd >= 0.01 ? `~$${d.costUsd.toFixed(2)}` : `~$${d.costUsd.toFixed(4)}`;
-        el.textContent = `7d: ${d.runs7d}x ${cost}`;
-        el.style.background = 'var(--amber-soft, rgba(245,158,11,0.1))';
-        el.style.color = 'var(--amber, #f59e0b)';
+        return;
       }
+
+      const fmt = totalTokens >= 1_000_000
+        ? `${(totalTokens / 1_000_000).toFixed(2)}M`
+        : totalTokens >= 1_000
+          ? `${(totalTokens / 1_000).toFixed(1)}k`
+          : String(totalTokens);
+      el.textContent = `7d: ${runs}x · ${fmt} tok`;
+      el.style.background = 'var(--blue-soft, rgba(59,130,246,0.12))';
+      el.style.color = 'var(--blue, #3b82f6)';
     } catch {}
   }));
 }
@@ -1808,16 +2047,40 @@ async function openTranscriptPanel(sessionKey) {
       return;
     }
     msgs.innerHTML = messages.map(m => {
-      const role = String(m.role || m.type || 'unknown');
+      const role = String(m.role || m.type || 'unknown').toLowerCase();
       const isUser = role === 'human' || role === 'user';
-      const isTool = role === 'tool' || role === 'tool_result' || m.tool_calls?.length;
-      const content = String(m.content || m.text || (Array.isArray(m.content) ? m.content.map(c => c.text || '').join(' ') : '') || '');
+      const isTool = role.includes('tool') || !!m.tool_calls?.length || !!m.toolCallId;
+
+      const normalizeContent = (value) => {
+        if (typeof value === 'string') return value;
+        if (Array.isArray(value)) {
+          return value.map(part => {
+            if (typeof part === 'string') return part;
+            if (part?.type === 'text') return part.text || '';
+            if (part?.type === 'thinking') return `[thinking] ${part.thinking || ''}`;
+            if (part?.type === 'toolCall') {
+              const args = part.arguments ? JSON.stringify(part.arguments) : '';
+              return `[toolCall:${part.name || 'tool'}] ${args}`;
+            }
+            return part?.text || part?.content || part?.name || part?.type || '';
+          }).filter(Boolean).join('\n');
+        }
+        if (value && typeof value === 'object') {
+          try { return JSON.stringify(value, null, 2); } catch { return String(value); }
+        }
+        return '';
+      };
+
+      const content = normalizeContent(m.content ?? m.text ?? '');
       const shortContent = content.length > 500 ? content.slice(0, 500) : content;
       const hasMore = content.length > 500;
       const ts = m.createdAt || m.timestamp || m.ts || '';
-      const tsStr = ts ? new Date(ts).toLocaleTimeString() : '';
+      const tsMs = Number(ts);
+      const tsStr = ts
+        ? new Date(Number.isFinite(tsMs) && tsMs > 0 ? tsMs : ts).toLocaleTimeString()
+        : '';
       if (isTool) {
-        const toolName = m.tool_calls?.[0]?.function?.name || m.name || 'tool';
+        const toolName = m.tool_calls?.[0]?.function?.name || m.toolName || m.name || 'tool';
         return `<details style="margin:2px 0;background:var(--bg);border:1px solid var(--border);border-radius:6px;padding:4px 8px"><summary style="font-size:11px;color:var(--muted);cursor:pointer">🔧 ${esc(toolName)} ${tsStr}</summary><pre style="font-size:11px;white-space:pre-wrap;word-break:break-word;margin:4px 0;max-height:200px;overflow-y:auto">${esc(shortContent)}${hasMore?`\n…(${content.length - 500} ${L==='en'?'more chars':'символов ещё'})`:''}</pre></details>`;
       }
       const bg = isUser ? 'var(--accent)' : 'var(--surface-2, var(--card-bg, var(--bg)))';
@@ -2101,6 +2364,7 @@ async function boot() {
   $('#closeTaskReplay')?.addEventListener('click', ()=>$('#taskReplayPanel')?.classList.add('hidden'));
   $('#healthHelpBtn')?.addEventListener('click', showHealthScoreHelp);
   bindReportActions();
+  window.addEventListener('resize', debounce(() => loadHeatmap(true), 180));
 
   // 4. Первая загрузка обзора — каждая секция независимо
   loadStats(false);

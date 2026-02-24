@@ -366,16 +366,24 @@
 
 <!-- ── AI Chat Widget ── -->
 <button id="chatToggle" title="AI Chat" style="position:fixed;bottom:24px;right:24px;width:52px;height:52px;border-radius:50%;z-index:1000;background:var(--accent);color:#fff;border:none;cursor:pointer;font-size:22px;box-shadow:0 4px 16px rgba(0,0,0,.25);display:flex;align-items:center;justify-content:center">💬</button>
-<div id="chatPanel" class="hidden" style="position:fixed;bottom:88px;right:24px;width:380px;max-width:calc(100vw - 32px);max-height:520px;border-radius:12px;z-index:999;background:var(--surface);border:1px solid var(--border);box-shadow:0 8px 32px rgba(0,0,0,.22);display:flex;flex-direction:column">
-  <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 14px 10px;border-bottom:1px solid var(--border);flex-shrink:0">
+<div id="chatPanel" class="hidden chat-panel chat-panel-float">
+  <div class="chat-head">
     <span style="font-weight:700;font-size:14px" id="chatTitle">💬 AI Chat</span>
-    <button class="icon-btn" id="chatClose"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+    <div class="chat-head-actions">
+      <button class="icon-btn" id="chatAttachBtn" title="Attach image">📎</button>
+      <button class="icon-btn" id="chatDockLeft" title="Dock left">⟸</button>
+      <button class="icon-btn" id="chatDockFloat" title="Float">⬚</button>
+      <button class="icon-btn" id="chatDockRight" title="Dock right">⟹</button>
+      <button class="icon-btn" id="chatClose"><svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg></button>
+    </div>
   </div>
-  <div id="chatMessages" style="flex:1;overflow-y:auto;padding:12px 14px;display:flex;flex-direction:column;gap:8px;min-height:200px;max-height:340px"></div>
-  <div style="padding:10px 12px;border-top:1px solid var(--border);display:flex;gap:8px;flex-shrink:0">
-    <textarea id="chatInput" rows="2" class="tag-input" style="flex:1;resize:none;font-size:13px" id="chatInput" placeholder="Спроси про агентов, cron, бюджет…"></textarea>
+  <div id="chatMessages" class="chat-messages"></div>
+  <div id="chatAttachments" class="chat-attachments hidden"></div>
+  <div class="chat-input-row">
+    <textarea id="chatInput" rows="2" class="tag-input chat-input" placeholder="Спроси про агентов, cron, бюджет…"></textarea>
     <button class="btn btn-sm" id="chatSend" style="align-self:flex-end">→</button>
   </div>
+  <input id="chatFileInput" type="file" accept="image/*" multiple class="hidden" />
 </div>
 
 <script src="./app.js" type="module"></script>

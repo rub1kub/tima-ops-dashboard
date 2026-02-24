@@ -11,6 +11,7 @@ const __dirname = path.dirname(__filename);
 const publicDir = path.join(__dirname, 'public');
 const dataDir = path.join(__dirname, 'data');
 const historyDir = path.join(dataDir, 'file-history');
+const chatUploadsDir = path.join(dataDir, 'chat-uploads');
 const tagsFile = path.join(dataDir, 'file-tags.json');
 const triageFile = path.join(dataDir, 'triage-state.json');
 const operatorEventsFile = path.join(dataDir, 'operator-events.jsonl');
@@ -43,6 +44,7 @@ const ALLOWED_CORE = new Set(['AGENTS.md', 'SOUL.md', 'USER.md', 'MEMORY.md', 'T
 async function ensureFiles() {
   await fs.mkdir(dataDir, { recursive: true });
   await fs.mkdir(historyDir, { recursive: true });
+  await fs.mkdir(chatUploadsDir, { recursive: true });
   try { await fs.access(tagsFile); } catch { await fs.writeFile(tagsFile, '{}\n', 'utf8'); }
   try { await fs.access(triageFile); } catch { await fs.writeFile(triageFile, '{}\n', 'utf8'); }
   try { await fs.access(operatorEventsFile); } catch { await fs.writeFile(operatorEventsFile, '', 'utf8'); }
@@ -100,8 +102,125 @@ function extractJson(text) {
   return JSON.parse(text.slice(start));
 }
 
+
+function extractAgentReplyText(rawOutput) {
+  const raw = String(rawOutput || '').trim();
+  if (!raw) return '';
+
+  try {
+    const parsed = extractJson(raw);
+
+    // openclaw agent --json shape: result.payloads[].text
+    const payloadTexts = Array.isArray(parsed?.result?.payloads)
+      ? parsed.result.payloads
+          .map(p => (typeof p?.text === 'string' ? p.text.trim() : ''))
+          .filter(Boolean)
+      : [];
+    if (payloadTexts.length) return payloadTexts.join('\n\n').trim();
+
+    // Generic fallbacks for other response shapes
+    const candidates = [
+      parsed?.message?.content,
+      parsed?.result?.message?.content,
+      parsed?.result?.text,
+      parsed?.content,
+      parsed?.text,
+      parsed?.reply,
+    ];
+    for (const c of candidates) {
+      if (typeof c === 'string' && c.trim()) return c.trim();
+    }
+  } catch {
+    // not JSON or partially logged output — keep raw fallback below
+  }
+
+  return raw;
+}
+
 function shQuote(text) {
   return `'${String(text).replace(/'/g, `'"'"'`)}'`;
+}
+
+function extFromMimeType(mime) {
+  const map = {
+    'image/jpeg': '.jpg',
+    'image/jpg': '.jpg',
+    'image/png': '.png',
+    'image/webp': '.webp',
+    'image/gif': '.gif',
+    'image/heic': '.heic',
+  };
+  return map[String(mime || '').toLowerCase()] || '.bin';
+}
+
+function parseDataUrl(dataUrl) {
+  const raw = String(dataUrl || '').trim();
+  const m = raw.match(/^data:([^;]+);base64,([a-zA-Z0-9+/=\s]+)$/);
+  if (!m) throw new Error('Invalid data URL');
+  const mimeType = String(m[1] || '').toLowerCase();
+  const b64 = String(m[2] || '').replace(/\s+/g, '');
+  const buffer = Buffer.from(b64, 'base64');
+  if (!buffer.length) throw new Error('Empty attachment');
+  return { mimeType, buffer };
+}
+
+async function storeChatAttachments(rawItems = []) {
+  const items = Array.isArray(rawItems) ? rawItems : [];
+  const limited = items.slice(0, 4);
+  const maxBytesPerFile = 8 * 1024 * 1024;
+  const out = [];
+
+  for (const item of limited) {
+    const dataUrl = String(item?.dataUrl || '').trim();
+    if (!dataUrl) continue;
+
+    const { mimeType, buffer } = parseDataUrl(dataUrl);
+    if (!mimeType.startsWith('image/')) throw new Error('Only image attachments are supported');
+    if (buffer.length > maxBytesPerFile) throw new Error('Attachment is too large (max 8MB each)');
+
+    const safeBase = path.basename(String(item?.name || 'image')).replace(/[^a-zA-Z0-9._-]+/g, '_').slice(0, 64) || 'image';
+    const ext = extFromMimeType(mimeType);
+    const fileName = `${Date.now()}-${randomUUID().slice(0, 8)}-${safeBase}${safeBase.endsWith(ext) ? '' : ext}`;
+    const fullPath = path.join(chatUploadsDir, fileName);
+    await fs.writeFile(fullPath, buffer);
+    out.push({ name: safeBase, path: fullPath, mimeType, sizeBytes: buffer.length });
+  }
+
+  return out;
+}
+
+function extractRunTokens(run) {
+  // Standard shape from cron runs: run.usage.{input_tokens, output_tokens, total_tokens}
+  const usages = [
+    run?.usage,
+    run?.tokens,
+    run?.result?.usage,
+    run?.result?.tokens,
+    run?.summary?.usage,
+    run?.summary?.tokens,
+  ].filter(u => u && typeof u === 'object');
+
+  let inputTokens = 0;
+  let outputTokens = 0;
+
+  for (const u of usages) {
+    inputTokens += Number(
+      u?.input_tokens ?? u?.inputTokens ?? u?.prompt_tokens ?? u?.promptTokens ?? u?.input ?? u?.prompt ?? u?.in ?? 0
+    );
+    outputTokens += Number(
+      u?.output_tokens ?? u?.outputTokens ?? u?.completion_tokens ?? u?.completionTokens ?? u?.output ?? u?.completion ?? u?.out ?? 0
+    );
+  }
+
+  if (!inputTokens && !outputTokens) {
+    inputTokens = Number(run?.inputTokens ?? run?.promptTokens ?? run?.prompt_tokens ?? 0);
+    outputTokens = Number(run?.outputTokens ?? run?.completionTokens ?? run?.completion_tokens ?? 0);
+  }
+
+  return {
+    inputTokens: Math.max(0, Math.round(inputTokens)),
+    outputTokens: Math.max(0, Math.round(outputTokens)),
+  };
 }
 
 // Resolve short model aliases to full provider/model strings that gateway accepts
@@ -1791,7 +1910,7 @@ const server = http.createServer(async (req, res) => {
       let errorNote = null;
       try {
         const params = JSON.stringify({ sessionKey, limit });
-        const out = await runCmd(`${OPENCLAW_BIN} gateway call sessions.history --params ${shQuote(params)} --json 2>/dev/null`, 25_000);
+        const out = await runCmd(`${OPENCLAW_BIN} gateway call chat.history --params ${shQuote(params)} --json 2>/dev/null`, 25_000);
         const parsed = extractJson(out);
         messages = Array.isArray(parsed?.messages) ? parsed.messages : (Array.isArray(parsed) ? parsed : []);
       } catch (e) {
@@ -1800,28 +1919,45 @@ const server = http.createServer(async (req, res) => {
       return json(res, 200, { ok: true, sessionKey, messages, errorNote });
     }
 
-    // ── Cron cost tracker ───────────────────────────────────────────────────────
+    // ── Cron token tracker (7d) ───────────────────────────────────────────────
     if (pathname.startsWith('/api/cron/cost')) {
       const cronId = url.searchParams.get('id') || '';
       if (!cronId) return json(res, 400, { error: 'id is required' });
       validateCronId(cronId);
-      // Try to derive cost from run history (cron.runs already fetched via cronRuns())
-      let runs7d = 0, inputTokens = 0, outputTokens = 0;
+
+      let runs7d = 0;
+      let inputTokens = 0;
+      let outputTokens = 0;
+
       try {
         const runsData = await cronRuns(cronId, 100);
         const sevenDaysAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
         const recent = (runsData?.runs || runsData?.entries || []).filter(r => {
-          const ts = r?.startedAt ? new Date(r.startedAt).getTime() : (r?.ts || 0);
+          const ts = r?.startedAt
+            ? new Date(r.startedAt).getTime()
+            : r?.createdAt
+              ? new Date(r.createdAt).getTime()
+              : (r?.ts || 0);
           return ts > sevenDaysAgo;
         });
+
         runs7d = recent.length;
         for (const r of recent) {
-          inputTokens += Number(r?.tokens?.input || r?.inputTokens || 0);
-          outputTokens += Number(r?.tokens?.output || r?.outputTokens || 0);
+          const usage = extractRunTokens(r);
+          inputTokens += usage.inputTokens;
+          outputTokens += usage.outputTokens;
         }
       } catch {}
-      const costUsd = (inputTokens / 1_000_000) * 3 + (outputTokens / 1_000_000) * 15;
-      return json(res, 200, { ok: true, cronId, runs7d, inputTokens, outputTokens, costUsd: Math.round(costUsd * 1000) / 1000 });
+
+      const totalTokens = inputTokens + outputTokens;
+      return json(res, 200, {
+        ok: true,
+        cronId,
+        runs7d,
+        inputTokens,
+        outputTokens,
+        totalTokens,
+      });
     }
 
     // ── Activity heatmap ────────────────────────────────────────────────────────
@@ -1857,15 +1993,31 @@ const server = http.createServer(async (req, res) => {
     // ── AI Chat endpoint ────────────────────────────────────────────────────────
     if (pathname === '/api/chat' && req.method === 'POST') {
       const body = await readJsonBody(req);
-      const userMessage = String(body.message || '').trim().slice(0, 2000);
+      const userMessage = String(body.message || '').trim().slice(0, 4000);
       const history = Array.isArray(body.history) ? body.history.slice(-8) : [];
       const lang = String(body.lang || 'ru').toLowerCase() === 'en' ? 'en' : 'ru';
-      if (!userMessage) return json(res, 400, { error: 'message is required' });
+
+      let chatAttachments = [];
+      try {
+        chatAttachments = await storeChatAttachments(body.attachments || []);
+      } catch (e) {
+        return json(res, 400, { error: e?.message || 'Invalid attachments' });
+      }
+
+      if (!userMessage && chatAttachments.length === 0) {
+        return json(res, 400, { error: lang === 'en' ? 'message or image is required' : 'нужно сообщение или изображение' });
+      }
 
       let summary;
       try { summary = await cached('summary-api', () => collectSummary(), 30_000); } catch { summary = {}; }
 
       const langNote = lang === 'en' ? 'Respond in English.' : 'Отвечай на русском языке.';
+      const toolPolicy = chatAttachments.length
+        ? (lang === 'en'
+          ? 'You may use only image-analysis tools to inspect attached images when needed. Do not execute external actions.'
+          : 'Можно использовать только инструменты анализа изображений для прикреплённых картинок. Внешние действия выполнять нельзя.')
+        : 'Do not call tools or perform external actions. Return plain text only.';
+
       const systemPrompt = `You are an AI assistant for the Tima Ops Dashboard — a monitoring panel for OpenClaw AI agents. ${langNote}
 
 Current state (${new Date().toISOString()}):
@@ -1876,35 +2028,56 @@ Current state (${new Date().toISOString()}):
 - Dashboard uptime: ${summary?.app?.uptime ?? '?'}
 - OpenClaw version: ${summary?.app?.version ?? '?'}
 
-Answer questions about agents, sessions, crons, alerts, and costs. Be concise.`;
+Answer questions about agents, sessions, crons, alerts, and costs. Be concise.
+${toolPolicy}`;
 
-      // Get gateway token
-      let gwToken = '';
+      const historyText = history.slice(-4).map(m => {
+        const role = m.role === 'user' ? (lang === 'en' ? 'User' : 'Пользователь') : (lang === 'en' ? 'Assistant' : 'Ассистент');
+        const raw = m?.content;
+        let content = '';
+        if (typeof raw === 'string') content = raw;
+        else if (Array.isArray(raw)) content = raw.map(x => typeof x === 'string' ? x : (x?.text || x?.thinking || x?.type || '')).join(' ');
+        else if (raw != null) content = JSON.stringify(raw);
+        return `${role}: ${String(content || '').slice(0, 700)}`;
+      }).join('\n');
+
+      const attachmentHint = chatAttachments.length
+        ? (lang === 'en'
+          ? `Attached images (${chatAttachments.length}):
+${chatAttachments.map((a, i) => `- image ${i + 1}: ${a.path}`).join('\n')}
+Use these files only if the user asks about image content.`
+          : `Прикреплённые изображения (${chatAttachments.length}):
+${chatAttachments.map((a, i) => `- изображение ${i + 1}: ${a.path}`).join('\n')}
+Используй эти файлы, если вопрос связан с содержимым картинки.`)
+        : '';
+
+      const userLine = userMessage || (lang === 'en' ? 'Please analyze attached images.' : 'Проанализируй прикреплённые изображения.');
+      const fullPrompt = `${systemPrompt}\n\n${historyText ? historyText + '\n' : ''}${attachmentHint ? attachmentHint + '\n\n' : ''}${lang === 'en' ? 'User' : 'Пользователь'}: ${userLine}\n\n${lang === 'en' ? 'Assistant (answer concisely in 2-4 sentences):' : 'Ассистент (ответь кратко, 2-4 предложения):'}`;
+
+      const cmd = `${OPENCLAW_BIN} agent --agent tima --message ${shQuote(fullPrompt)} --json --timeout 60000 2>/dev/null`;
+      let reply = '';
       try {
-        gwToken = (await runCmd(`${OPENCLAW_BIN} config get gateway.auth.token 2>/dev/null`, 10_000)).trim();
-      } catch {}
-
-      if (!gwToken) return json(res, 503, { error: 'gateway token unavailable' });
-
-      const messages = [
-        { role: 'system', content: systemPrompt },
-        ...history.map(m => ({ role: m.role === 'user' ? 'user' : 'assistant', content: String(m.content || '').slice(0, 1000) })),
-        { role: 'user', content: userMessage },
-      ];
-
-      const chatRes = await fetch('http://127.0.0.1:18789/v1/chat/completions', {
-        method: 'POST',
-        headers: { 'Authorization': `Bearer ${gwToken}`, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'anthropic/claude-sonnet-4-6', messages, max_tokens: 600 }),
-        signal: AbortSignal.timeout(45_000),
-      });
-      if (!chatRes.ok) {
-        const err = await chatRes.text().catch(() => '');
-        return json(res, 502, { error: `Gateway error ${chatRes.status}: ${err.slice(0, 200)}` });
+        const agentOut = await runCmd(cmd, 70_000);
+        reply = extractAgentReplyText(agentOut).slice(0, 2000);
+      } catch (e) {
+        const fallback = lang === 'en'
+          ? `AI model is temporarily unavailable. Quick status: ${summary?.openclaw?.activeSessions ?? '?'} active sessions out of ${summary?.openclaw?.totalSessions ?? '?'}, ${summary?.openclaw?.enabledCrons ?? '?'} enabled crons. Try again in a minute.`
+          : `AI-модель временно недоступна. Быстрый статус: активных сессий ${summary?.openclaw?.activeSessions ?? '?'}/${summary?.openclaw?.totalSessions ?? '?'}, включённых cron ${summary?.openclaw?.enabledCrons ?? '?'}. Повтори запрос через минуту.`;
+        return json(res, 200, { ok: true, degraded: true, reply: fallback, error: `Agent error: ${e.message?.slice(0, 240)}` });
       }
-      const chatData = await chatRes.json();
-      const reply = chatData?.choices?.[0]?.message?.content || '';
-      return json(res, 200, { ok: true, reply });
+
+      if (!reply) {
+        const fallback = lang === 'en'
+          ? `AI returned an empty response. Quick status: ${summary?.openclaw?.activeSessions ?? '?'} active sessions, ${summary?.openclaw?.enabledCrons ?? '?'} enabled crons.`
+          : `AI вернул пустой ответ. Быстрый статус: активных сессий ${summary?.openclaw?.activeSessions ?? '?'}, включённых cron ${summary?.openclaw?.enabledCrons ?? '?'}.`;
+        return json(res, 200, { ok: true, degraded: true, reply: fallback });
+      }
+
+      return json(res, 200, {
+        ok: true,
+        reply,
+        attachments: chatAttachments.map(a => ({ name: a.name, mimeType: a.mimeType, sizeBytes: a.sizeBytes })),
+      });
     }
 
     if (pathname === '/api/skills') {
