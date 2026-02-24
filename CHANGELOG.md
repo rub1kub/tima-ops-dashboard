@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## [0.4.1] - 2026-02-24
+
+### Fixed
+- **Overview block widths** — added explicit min/max constraints for cards and grid columns to prevent broken proportions (`stat`, `two-col`, `three-col`, and card containers); long content now wraps instead of stretching layout.
+- **Activity heatmap logic** — stabilized rendering with strict 7×24 normalization and safer fallback handling so the block no longer disappears or breaks when payload is sparse/inconsistent.
+- **Activity heatmap visuals** — redesigned spacing, cell sizing, centering, legend contrast, and responsive target width so it looks balanced on desktop and mobile.
+
+### Changed
+- `loadHeatmap()` now uses container-based target width (desktop/mobile presets) and keeps the component visible with a proper "no activity"/error state instead of hiding the card.
+- List containers now enforce `overflow-x: hidden` and improved word wrapping for alert/recommendation text blocks.
+
 ## [0.4.0] - 2026-02-24
 
 ### Added

@@ -177,10 +177,11 @@ body { font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-s
 .tab-content { display: grid; gap: 14px; }
 
 /* ── Stat cards ── */
-.stat-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+.stat-row { display: grid; grid-template-columns: repeat(4, minmax(220px, 1fr)); gap: 12px; }
 .stat-card {
   background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius); padding: 16px; box-shadow: var(--shadow-sm);
+  min-width: 220px; max-width: 100%;
 }
 .stat-top { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 10px; }
 .stat-icon {
@@ -216,13 +217,15 @@ body { font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-s
 }
 
 /* ── Two col ── */
-.two-col { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; align-items: start; }
-.three-col { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 14px; align-items: start; }
+.two-col { display: grid; grid-template-columns: repeat(2, minmax(340px, 1fr)); gap: 14px; align-items: start; }
+.three-col { display: grid; grid-template-columns: repeat(3, minmax(260px, 1fr)); gap: 14px; align-items: start; }
 
 /* ── Card ── */
 .card {
   background: var(--surface); border: 1px solid var(--border);
   border-radius: var(--radius); padding: 14px; box-shadow: var(--shadow-sm);
+  min-width: 260px;
+  max-width: 100%;
 }
 .card-head {
   display: flex; align-items: center; gap: 10px; margin-bottom: 12px;
@@ -255,7 +258,7 @@ body { font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-s
 .help-dot:hover { color: var(--text); border-color: var(--muted-2); }
 
 /* ── Alert / item rows ── */
-.list-container { display: grid; gap: 8px; max-height: 340px; overflow: auto; }
+.list-container { display: grid; gap: 8px; max-height: 340px; overflow-y: auto; overflow-x: hidden; min-width: 0; }
 .alert-item {
   display: flex; gap: 10px; align-items: flex-start;
   padding: 10px 12px; border-radius: 9px; border: 1px solid transparent;
@@ -271,8 +274,21 @@ body { font-family: Inter, -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-s
 .alert-item.info .alert-dot { background: var(--blue); }
 .alert-item.warning .alert-dot { background: var(--amber); }
 .alert-item.critical .alert-dot { background: var(--red); }
-.alert-title { font-size: 13px; font-weight: 600; }
-.alert-detail { font-size: 11px; color: var(--muted); margin-top: 2px; }
+.alert-title {
+  font-size: 13px;
+  font-weight: 600;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+.alert-detail {
+  font-size: 11px;
+  color: var(--muted);
+  margin-top: 2px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
 
 /* ── Toolbar ── */
 .toolbar {

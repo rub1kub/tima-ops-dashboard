@@ -55,70 +55,92 @@ async function loadHeatmap(silent=false) {
   const card = $('#heatmapCard');
   const grid = $('#heatmapGrid');
   if (!card || !grid) return;
+
   try {
     const d = await api('activity/heatmap', 15000);
-    const matrix = d.matrix;
-    if (!matrix) { card.style.display = 'none'; return; }
-    // Check if there's any data
+    const raw = Array.isArray(d?.matrix) ? d.matrix : [];
+
+    // normalize to 7x24, so UI never crashes on malformed payload
+    const matrix = Array.from({ length: 7 }, (_, day) => {
+      const row = Array.isArray(raw[day]) ? raw[day] : [];
+      return Array.from({ length: 24 }, (_, h) => Number(row[h] || 0));
+    });
+
     const total = matrix.flat().reduce((a, b) => a + b, 0);
-    if (total === 0 && silent) { card.style.display = 'none'; return; }
+    const maxVal = Math.max(1, ...matrix.flat());
+
     card.style.display = '';
+
     // Update i18n labels
     const titleEl = $('#heatmapTitle');
     const subEl = $('#heatmapSub');
     if (titleEl) titleEl.textContent = t('heatmapTitle');
-    if (subEl) subEl.textContent = t('heatmapSub');
+    if (subEl) {
+      subEl.textContent = total > 0
+        ? t('heatmapSub')
+        : (L === 'en' ? 'no activity in last 7 days' : 'за 7 дней активности не было');
+    }
 
-    const maxVal = Math.max(1, ...matrix.flat());
     const days = L === 'en' ? DAY_LABELS_EN : DAY_LABELS_RU;
 
-    // Make heatmap responsive so it does not become too wide on smaller screens
-    const dayLabelW = 24;
-    const containerW = Math.max(260, grid.clientWidth || card.clientWidth || 360);
-    const cell = Math.max(9, Math.min(13, Math.floor((containerW - dayLabelW - 8) / 24) - 2));
-    const cellOuter = cell + 2; // + margins
-    const hourStep = cell <= 10 ? 8 : 6;
+    // balanced size: not tiny on desktop, not stretched on mobile
+    const dayLabelW = 28;
+    const containerW = Math.max(280, grid.clientWidth || card.clientWidth || 640);
+    const targetGridW = containerW < 560
+      ? Math.max(300, containerW - 8)
+      : Math.min(680, Math.max(520, containerW - 24));
+
+    const cellOuter = Math.max(11, Math.floor((targetGridW - dayLabelW) / 24));
+    const cell = Math.max(9, cellOuter - 2);
+    const hourStep = cell <= 11 ? 8 : cell <= 16 ? 6 : 4;
     const legendCell = Math.max(9, cell - 2);
 
     const gridWidth = dayLabelW + (24 * cellOuter) + 8;
     let html = `<div style="display:flex;justify-content:center;width:100%"><div style="font-size:11px;width:min(100%,${gridWidth}px)">`;
+
     // Hour labels
-    html += `<div style="display:flex;padding-left:${dayLabelW + 2}px;gap:0;margin-bottom:2px">`;
+    html += `<div style="display:flex;padding-left:${dayLabelW + 2}px;gap:0;margin-bottom:4px">`;
     for (let h = 0; h < 24; h++) {
       const show = h % hourStep === 0;
       html += `<div style="width:${cellOuter}px;text-align:center;color:var(--muted);font-size:10px">${show ? h : ''}</div>`;
     }
     html += `</div>`;
+
     // Grid rows
     for (let d2 = 0; d2 < 7; d2++) {
-      html += `<div style="display:flex;align-items:center;gap:0;margin-bottom:2px">`;
+      html += `<div style="display:flex;align-items:center;gap:0;margin-bottom:3px">`;
       html += `<div style="width:${dayLabelW}px;font-size:10px;color:var(--muted);text-align:right;padding-right:4px;flex-shrink:0">${days[d2]}</div>`;
       for (let h = 0; h < 24; h++) {
         const val = matrix[d2][h];
         const pct = val / maxVal;
         let bg;
         if (val === 0) bg = 'var(--border)';
-        else if (pct < 0.25) bg = 'rgba(99,102,241,0.2)';
-        else if (pct < 0.6) bg = 'rgba(99,102,241,0.55)';
+        else if (pct < 0.25) bg = 'rgba(99,102,241,0.28)';
+        else if (pct < 0.6) bg = 'rgba(99,102,241,0.62)';
         else bg = 'rgba(99,102,241,1)';
         const dayStr = L === 'en' ? DAY_LABELS_EN[d2] : DAY_LABELS_RU[d2];
-        html += `<div style="width:${cell}px;height:${cell}px;background:${bg};border-radius:2px;margin:1px;flex-shrink:0;cursor:default" title="${dayStr} ${h}:00 — ${val}"></div>`;
+        html += `<div style="width:${cell}px;height:${cell}px;background:${bg};border-radius:3px;margin:1px;flex-shrink:0;cursor:default" title="${dayStr} ${h}:00 — ${val}"></div>`;
       }
       html += `</div>`;
     }
+
     // Legend
-    html += `<div style="display:flex;align-items:center;gap:4px;margin-top:6px;padding-left:${dayLabelW + 2}px">
+    html += `<div style="display:flex;align-items:center;gap:5px;margin-top:8px;padding-left:${dayLabelW + 2}px">
       <span style="font-size:10px;color:var(--muted)">${t('heatmapLess')}</span>
       ${[0,0.15,0.4,0.7,1].map(p=>{
-        const bg = p===0?'var(--border)':p<0.25?'rgba(99,102,241,0.2)':p<0.6?'rgba(99,102,241,0.55)':'rgba(99,102,241,1)';
-        return `<div style="width:${legendCell}px;height:${legendCell}px;background:${bg};border-radius:2px"></div>`;
+        const bg = p===0?'var(--border)':p<0.25?'rgba(99,102,241,0.28)':p<0.6?'rgba(99,102,241,0.62)':'rgba(99,102,241,1)';
+        return `<div style="width:${legendCell}px;height:${legendCell}px;background:${bg};border-radius:3px"></div>`;
       }).join('')}
       <span style="font-size:10px;color:var(--muted)">${t('heatmapMore')}</span>
     </div>`;
+
     html += `</div></div>`;
     grid.innerHTML = html;
   } catch {
-    if (!silent && card) card.style.display = 'none';
+    if (!silent && card) {
+      card.style.display = '';
+      grid.innerHTML = `<div style="padding:8px 2px;color:var(--muted);font-size:12px">${L==='en'?'Failed to load heatmap':'Не удалось загрузить heatmap'}</div>`;
+    }
   }
 }
 
